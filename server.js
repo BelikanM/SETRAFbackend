@@ -75,6 +75,7 @@ const userSchema = new mongoose.Schema({
     creationDate: { type: Date, required: true },
     expiryDate: { type: Date, required: true },
     filePath: { type: String },
+    imagePath: { type: String },
   }],
 });
 
@@ -313,7 +314,10 @@ app.post('/api/user/update-profile', authenticateToken, async (req, res) => {
 });
 
 // Endpoint pour ajouter un certificat
-app.post('/api/user/add-certificate', authenticateToken, upload.single('file'), async (req, res) => {
+app.post('/api/user/add-certificate', authenticateToken, upload.fields([
+  { name: 'file', maxCount: 1 },
+  { name: 'image', maxCount: 1 }
+]), async (req, res) => {
   try {
     const { title, creationDate, expiryDate } = req.body;
     const user = await User.findById(req.user._id);
@@ -321,7 +325,8 @@ app.post('/api/user/add-certificate', authenticateToken, upload.single('file'), 
       title,
       creationDate,
       expiryDate,
-      filePath: req.file ? req.file.path : null,
+      filePath: req.files['file'] ? req.files['file'][0].path : null,
+      imagePath: req.files['image'] ? req.files['image'][0].path : null,
     };
     user.certificates.push(newCert);
     await user.save();
@@ -332,7 +337,10 @@ app.post('/api/user/add-certificate', authenticateToken, upload.single('file'), 
 });
 
 // Endpoint pour modifier un certificat
-app.post('/api/user/edit-certificate', authenticateToken, upload.single('file'), async (req, res) => {
+app.post('/api/user/edit-certificate', authenticateToken, upload.fields([
+  { name: 'file', maxCount: 1 },
+  { name: 'image', maxCount: 1 }
+]), async (req, res) => {
   try {
     const { index, title, creationDate, expiryDate } = req.body;
     const user = await User.findById(req.user._id);
@@ -341,11 +349,28 @@ app.post('/api/user/edit-certificate', authenticateToken, upload.single('file'),
     cert.title = title;
     cert.creationDate = creationDate;
     cert.expiryDate = expiryDate;
-    if (req.file) cert.filePath = req.file.path;
+    if (req.files['file']) cert.filePath = req.files['file'][0].path;
+    if (req.files['image']) cert.imagePath = req.files['image'][0].path;
     await user.save();
     res.json({ certificates: user.certificates });
   } catch (err) {
     res.status(500).json({ message: 'Erreur lors de la modification du certificat' });
+  }
+});
+
+// Endpoint pour supprimer un certificat
+app.post('/api/user/delete-certificate', authenticateToken, async (req, res) => {
+  try {
+    const { index } = req.body;
+    const user = await User.findById(req.user._id);
+    if (index < 0 || index >= user.certificates.length) {
+      return res.status(404).json({ message: 'Certificat non trouvé' });
+    }
+    user.certificates.splice(index, 1);
+    await user.save();
+    res.json({ certificates: user.certificates });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de la suppression du certificat' });
   }
 });
 
@@ -358,7 +383,15 @@ app.get('/api/stats', authenticateToken, restrictTo('admin', 'manager'), async (
       { $match: { 'certificates.expiryDate': { $lt: new Date() } } },
       { $count: 'expired' }
     ]);
-    res.json({ totalEmployees, expiredCertificates: expiredCertificates[0]?.expired || 0 });
+    const totalCertificates = await User.aggregate([
+      { $unwind: '$certificates' },
+      { $count: 'total' }
+    ]);
+    res.json({ 
+      totalEmployees, 
+      expiredCertificates: expiredCertificates[0]?.expired || 0,
+      totalCertificates: totalCertificates[0]?.total || 0
+    });
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur' });
   }
