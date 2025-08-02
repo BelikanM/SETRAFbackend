@@ -44,8 +44,40 @@ const upload = multer({ storage });
 
 // Connexion à MongoDB
 mongoose.connect(MONGO_URI)
-  .then(() => console.log('Connecté à MongoDB'))
+  .then(async () => {
+    console.log('Connecté à MongoDB');
+    await createSuperAdmin();
+  })
   .catch(err => console.error('Erreur de connexion à MongoDB:', err));
+
+// Fonction pour activer/forcer le super admin sans vérification
+async function createSuperAdmin() {
+  const superEmail = SUPER_ADMIN_EMAIL;
+  let superUser = await User.findOne({ email: superEmail });
+  const defaultPassword = 'superadminpassword'; // Changez cela par un mot de passe sécurisé en production
+  const hashedPassword = await bcrypt.hash(defaultPassword, 10);
+
+  if (!superUser) {
+    superUser = new User({
+      email: superEmail,
+      password: hashedPassword,
+      role: 'admin',
+      isVerified: true,
+      isApproved: true,
+      firstName: 'Super',
+      lastName: 'Admin',
+    });
+    await superUser.save();
+    console.log('Super Admin créé avec succès. Mot de passe par défaut : ' + defaultPassword);
+  } else {
+    superUser.role = 'admin';
+    superUser.isVerified = true;
+    superUser.isApproved = true;
+    superUser.password = hashedPassword; // Réinitialiser le mot de passe si nécessaire
+    await superUser.save();
+    console.log('Super Admin activé avec succès. Mot de passe réinitialisé à : ' + defaultPassword);
+  }
+}
 
 // Configuration de Nodemailer
 const transporter = nodemailer.createTransport({
@@ -62,6 +94,7 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   role: { type: String, enum: ['admin', 'manager', 'employee'], default: 'employee' },
   isVerified: { type: Boolean, default: false },
+  isApproved: { type: Boolean, default: true },
   verificationCode: { type: String },
   verificationCodeExpiry: { type: Date },
   firstName: { type: String },
@@ -184,6 +217,10 @@ app.post('/api/register', upload.fields([
       isVerified: email === SUPER_ADMIN_EMAIL, // Super admin isVerified = true
     });
 
+    if (role === 'admin' && email !== SUPER_ADMIN_EMAIL) {
+      user.isApproved = false;
+    }
+
     await user.save();
 
     if (email !== SUPER_ADMIN_EMAIL) {
@@ -263,6 +300,10 @@ app.post('/api/login', async (req, res) => {
 
     if (!user.isVerified) {
       return res.status(403).json({ message: 'Compte non vérifié. Vérifiez votre email pour le code.', needsVerification: true });
+    }
+
+    if (user.role === 'admin' && !user.isApproved) {
+      return res.status(403).json({ message: 'Compte en attente d\'approbation par un administrateur.', needsApproval: true });
     }
 
     const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
@@ -436,6 +477,49 @@ app.post('/api/forms', authenticateToken, restrictTo('admin', 'manager'), async 
     res.json(form);
   } catch (err) {
     res.status(500).json({ message: 'Erreur lors de l\'ajout du formulaire' });
+  }
+});
+
+// Endpoint pour liste des utilisateurs (pour admin)
+app.get('/api/users', authenticateToken, restrictTo('admin'), async (req, res) => {
+  try {
+    const users = await User.find().select('-password -verificationCode -verificationCodeExpiry');
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+// Endpoint pour approuver un utilisateur (pour admin)
+app.post('/api/users/:id/approve', authenticateToken, restrictTo('admin'), async (req, res) => {
+  try {
+    const userToApprove = await User.findById(req.params.id);
+    if (!userToApprove) return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    userToApprove.isApproved = true;
+    await userToApprove.save();
+    res.json({ message: 'Utilisateur approuvé' });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de l\'approbation' });
+  }
+});
+
+// Endpoint pour mettre à jour le rôle d'un utilisateur (pour admin)
+app.post('/api/users/:id/update-role', authenticateToken, restrictTo('admin'), async (req, res) => {
+  try {
+    const { role } = req.body;
+    const userToUpdate = await User.findById(req.params.id);
+    if (!userToUpdate) return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    if (!['admin', 'manager', 'employee'].includes(role)) return res.status(400).json({ message: 'Rôle invalide' });
+    userToUpdate.role = role;
+    if (role === 'admin') {
+      userToUpdate.isApproved = true;
+    } else {
+      userToUpdate.isApproved = true; // Reset pour non-admin
+    }
+    await userToUpdate.save();
+    res.json({ message: 'Rôle mis à jour', role: userToUpdate.role });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de la mise à jour du rôle' });
   }
 });
 
