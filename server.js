@@ -1,11 +1,14 @@
-// server.js
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 const cors = require('cors');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 // Configuration des variables d'environnement
 const PORT = process.env.PORT || 5000;
@@ -22,9 +25,25 @@ const EMAIL_PASS = process.env.EMAIL_PASS;
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use('/uploads', express.static('uploads')); // Servir les fichiers statiques pour photos et certificats
+
+// Configuration de Multer pour les uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadPath = 'uploads/';
+    if (!fs.existsSync(uploadPath)) {
+      fs.mkdirSync(uploadPath);
+    }
+    cb(null, uploadPath);
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + '-' + file.originalname);
+  },
+});
+const upload = multer({ storage });
 
 // Connexion à MongoDB
-mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(MONGO_URI)
   .then(() => console.log('Connecté à MongoDB'))
   .catch(err => console.error('Erreur de connexion à MongoDB:', err));
 
@@ -42,6 +61,20 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   role: { type: String, enum: ['admin', 'manager', 'employee'], default: 'employee' },
+  isVerified: { type: Boolean, default: false },
+  verificationCode: { type: String },
+  verificationCodeExpiry: { type: Date },
+  firstName: { type: String },
+  lastName: { type: String },
+  profilePhoto: { type: String },
+  nip: { type: String },
+  passport: { type: String },
+  certificates: [{
+    title: { type: String, required: true },
+    creationDate: { type: Date, required: true },
+    expiryDate: { type: Date, required: true },
+    filePath: { type: String },
+  }],
 });
 
 const employeeSchema = new mongoose.Schema({
@@ -61,7 +94,7 @@ const formSchema = new mongoose.Schema({
     {
       fieldName: { type: String, required: true },
       fieldType: { type: String, required: true, enum: ['text', 'number', 'date', 'select'] },
-      options: [{ type: String }], // Pour les champs de type "select"
+      options: [{ type: String }],
       required: { type: Boolean, default: false },
     },
   ],
@@ -98,29 +131,119 @@ const restrictTo = (...roles) => {
   };
 };
 
+// Fonction pour générer un code à 8 chiffres
+const generateVerificationCode = () => {
+  return Math.floor(10000000 + Math.random() * 90000000).toString();
+};
+
 // Routes d'authentification
-app.post('/api/register', async (req, res) => {
-  const { email, password, role } = req.body;
+app.post('/api/register', upload.fields([{ name: 'profilePhoto', maxCount: 1 }, { name: 'certificates' }]), async (req, res) => {
   try {
+    const { email, password, firstName, lastName, nip, passport, certificatesData } = req.body;
+    const certificatesParsed = certificatesData ? JSON.parse(certificatesData) : [];
+
+    // Vérification de l'email
     const existingUser = await User.findOne({ email });
     if (existingUser) return res.status(400).json({ message: 'Email déjà utilisé' });
 
+    // Hachage du mot de passe
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = new User({ email, password: hashedPassword, role });
+
+    // Gestion des fichiers
+    const profilePhotoPath = req.files.profilePhoto ? req.files.profilePhoto[0].path : null;
+    const certificates = certificatesParsed.map((cert, index) => ({
+      title: cert.title,
+      creationDate: new Date(cert.creationDate),
+      expiryDate: new Date(cert.expiryDate),
+      filePath: req.files.certificates && req.files.certificates[index] ? req.files.certificates[index].path : null,
+    }));
+
+    // Création de l'utilisateur
+    const user = new User({
+      email,
+      password: hashedPassword,
+      role: 'employee',
+      firstName,
+      lastName,
+      profilePhoto: profilePhotoPath,
+      nip,
+      passport,
+      certificates,
+      isVerified: false,
+    });
+
+    // Génération du code de vérification
+    const verificationCode = generateVerificationCode();
+    user.verificationCode = verificationCode;
+    user.verificationCodeExpiry = Date.now() + 24 * 60 * 60 * 1000; // 24 heures
     await user.save();
 
-    const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
-    res.status(201).json({ token, user: { email, role } });
+    // Envoi de l'email de vérification
+    const mailOptions = {
+      from: EMAIL_USER,
+      to: email,
+      subject: 'Votre code de vérification',
+      html: `<p>Merci pour votre inscription ! Voici votre code de vérification : <strong>${verificationCode}</strong></p>
+             <p>Entrez ce code sur la page de connexion pour vérifier votre compte. Ce code expire dans 24 heures.</p>`,
+    };
+    await transporter.sendMail(mailOptions);
+
+    res.status(201).json({ message: 'Inscription réussie ! Un code de vérification a été envoyé à votre email.' });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: 'Erreur lors de l\'inscription', error: err.message });
   }
 });
 
+app.post('/api/check-verification', async (req, res) => {
+  const { email } = req.body;
+  try {
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    res.json({ isRegistered: true, isVerified: user.isVerified });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de la vérification du statut', error: err.message });
+  }
+});
+
 app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, verificationCode } = req.body;
   try {
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ message: 'Utilisateur non trouvé' });
+
+    if (!user.isVerified) {
+      if (verificationCode) {
+        // Vérifier le code si fourni
+        if (user.verificationCode !== verificationCode) {
+          return res.status(400).json({ message: 'Code de vérification invalide' });
+        }
+        if (user.verificationCodeExpiry < Date.now()) {
+          return res.status(400).json({ message: 'Code de vérification expiré' });
+        }
+        user.isVerified = true;
+        user.verificationCode = undefined;
+        user.verificationCodeExpiry = undefined;
+        await user.save();
+      } else {
+        // Générer et envoyer un nouveau code si non vérifié et pas de code fourni
+        const newVerificationCode = generateVerificationCode();
+        user.verificationCode = newVerificationCode;
+        user.verificationCodeExpiry = Date.now() + 24 * 60 * 60 * 1000;
+        await user.save();
+
+        const mailOptions = {
+          from: EMAIL_USER,
+          to: email,
+          subject: 'Votre code de vérification',
+          html: `<p>Votre code de vérification est : <strong>${newVerificationCode}</strong></p>
+                 <p>Entrez ce code sur la page de connexion pour vérifier votre compte. Ce code expire dans 24 heures.</p>`,
+        };
+        await transporter.sendMail(mailOptions);
+
+        return res.status(403).json({ message: 'Compte non vérifié. Un code de vérification a été envoyé à votre email.' });
+      }
+    }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: 'Mot de passe incorrect' });
@@ -129,6 +252,64 @@ app.post('/api/login', async (req, res) => {
     res.json({ token, user: { email, role: user.role } });
   } catch (err) {
     res.status(500).json({ message: 'Erreur lors de la connexion', error: err.message });
+  }
+});
+
+app.post('/api/verify-code', async (req, res) => {
+  const { email, code } = req.body;
+  try {
+    const user = await User.findOne({ email, verificationCode: code });
+    if (!user) return res.status(400).json({ message: 'Code de vérification invalide' });
+
+    if (user.verificationCodeExpiry < Date.now()) return res.status(400).json({ message: 'Code de vérification expiré' });
+
+    user.isVerified = true;
+    user.verificationCode = undefined;
+    user.verificationCodeExpiry = undefined;
+    await user.save();
+
+    const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+    res.status(200).json({ message: 'Compte vérifié avec succès !', token });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de la vérification', error: err.message });
+  }
+});
+
+app.post('/api/resend-code', async (req, res) => {
+  const { email } = req.body;
+  try {
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: 'Utilisateur non trouvé' });
+    if (user.isVerified) return res.status(400).json({ message: 'Compte déjà vérifié' });
+
+    const verificationCode = generateVerificationCode();
+    user.verificationCode = verificationCode;
+    user.verificationCodeExpiry = Date.now() + 24 * 60 * 60 * 1000;
+    await user.save();
+
+    const mailOptions = {
+      from: EMAIL_USER,
+      to: email,
+      subject: 'Nouveau code de vérification',
+      html: `<p>Votre nouveau code de vérification est : <strong>${verificationCode}</strong></p>
+             <p>Entrez ce code sur la page de connexion pour vérifier votre compte. Ce code expire dans 24 heures.</p>`,
+    };
+    await transporter.sendMail(mailOptions);
+
+    res.status(200).json({ message: 'Un nouveau code de vérification a été envoyé à votre email.' });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de l\'envoi du code', error: err.message });
+  }
+});
+
+// Nouvel endpoint pour récupérer les données complètes de l'utilisateur connecté
+app.get('/api/user/me', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('-password -verificationCode -verificationCodeExpiry');
+    if (!user) return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de la récupération des données utilisateur', error: err.message });
   }
 });
 
@@ -148,7 +329,6 @@ app.post('/api/employees', authenticateToken, restrictTo('admin', 'manager'), as
     });
     await employee.save();
 
-    // Envoi d'email de notification
     const mailOptions = {
       from: EMAIL_USER,
       to: email,
