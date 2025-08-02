@@ -4,7 +4,6 @@ const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
-const crypto = require('crypto');
 const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
@@ -20,6 +19,7 @@ const MONGO_URI = `mongodb+srv://${MONGO_USER}:${MONGO_PASSWORD}@${MONGO_CLUSTER
 const JWT_SECRET = process.env.JWT_SECRET;
 const EMAIL_USER = process.env.EMAIL_USER;
 const EMAIL_PASS = process.env.EMAIL_PASS;
+const SUPER_ADMIN_EMAIL = 'nyundumathryme@gmail.com'; // Email du super admin permanent
 
 // Initialisation de l'application Express
 const app = express();
@@ -69,6 +69,7 @@ const userSchema = new mongoose.Schema({
   profilePhoto: { type: String },
   nip: { type: String },
   passport: { type: String },
+  professionalCard: { type: String }, // Carte professionnelle pour admin
   certificates: [{
     title: { type: String, required: true },
     creationDate: { type: Date, required: true },
@@ -136,306 +137,272 @@ const generateVerificationCode = () => {
   return Math.floor(10000000 + Math.random() * 90000000).toString();
 };
 
-// Routes d'authentification
-app.post('/api/register', upload.fields([{ name: 'profilePhoto', maxCount: 1 }, { name: 'certificates' }]), async (req, res) => {
+// Route d'inscription
+app.post('/api/register', upload.fields([
+  { name: 'profilePhoto', maxCount: 1 },
+  { name: 'professionalCard', maxCount: 1 },
+  { name: 'certificates' }
+]), async (req, res) => {
   try {
-    const { email, password, firstName, lastName, nip, passport, certificatesData } = req.body;
-    const certificatesParsed = certificatesData ? JSON.parse(certificatesData) : [];
+    const { email, password, firstName, lastName, role, nip, passport, certificatesData } = req.body;
+    const certificatesParsed = JSON.parse(certificatesData);
 
-    // Vérification de l'email
+    // Vérifier la carte professionnelle pour admin
+    if (role === 'admin' && !req.files.professionalCard) {
+      return res.status(400).json({ message: 'La carte professionnelle est obligatoire pour les administrateurs.' });
+    }
+
+    // Vérifier si l'email existe déjà
     const existingUser = await User.findOne({ email });
-    if (existingUser) return res.status(400).json({ message: 'Email déjà utilisé' });
+    if (existingUser) {
+      return res.status(400).json({ message: 'Cet email est déjà utilisé.' });
+    }
 
-    // Hachage du mot de passe
+    // Hacher le mot de passe
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Gestion des fichiers
+    // Gérer les fichiers
     const profilePhotoPath = req.files.profilePhoto ? req.files.profilePhoto[0].path : null;
+    const professionalCardPath = req.files.professionalCard ? req.files.professionalCard[0].path : null;
     const certificates = certificatesParsed.map((cert, index) => ({
-      title: cert.title,
-      creationDate: new Date(cert.creationDate),
-      expiryDate: new Date(cert.expiryDate),
-      filePath: req.files.certificates && req.files.certificates[index] ? req.files.certificates[index].path : null,
+      ...cert,
+      filePath: req.files.certificates && req.files.certificates[index] ? req.files.certificates[index].path : null
     }));
 
-    // Création de l'utilisateur
     const user = new User({
       email,
       password: hashedPassword,
-      role: 'employee',
+      role,
       firstName,
       lastName,
       profilePhoto: profilePhotoPath,
+      professionalCard: professionalCardPath,
       nip,
       passport,
       certificates,
-      isVerified: false,
+      isVerified: email === SUPER_ADMIN_EMAIL, // Super admin isVerified = true
     });
 
-    // Génération du code de vérification
-    const verificationCode = generateVerificationCode();
-    user.verificationCode = verificationCode;
-    user.verificationCodeExpiry = Date.now() + 24 * 60 * 60 * 1000; // 24 heures
     await user.save();
 
-    // Envoi de l'email de vérification
-    const mailOptions = {
-      from: EMAIL_USER,
-      to: email,
-      subject: 'Votre code de vérification',
-      html: `<p>Merci pour votre inscription ! Voici votre code de vérification : <strong>${verificationCode}</strong></p>
-             <p>Entrez ce code sur la page de connexion pour vérifier votre compte. Ce code expire dans 24 heures.</p>`,
-    };
-    await transporter.sendMail(mailOptions);
+    if (email !== SUPER_ADMIN_EMAIL) {
+      // Générer le code de vérification à 8 chiffres
+      user.verificationCode = generateVerificationCode();
+      user.verificationCodeExpiry = Date.now() + 24 * 60 * 60 * 1000; // 24 heures
+      await user.save();
 
-    res.status(201).json({ message: 'Inscription réussie ! Un code de vérification a été envoyé à votre email.' });
+      // Envoyer l'email avec le code via Nodemailer
+      const mailOptions = {
+        from: process.env.EMAIL_USER,
+        to: email,
+        subject: 'Vérification de votre compte',
+        html: `<p>Merci pour votre inscription ! Votre code de vérification est : <strong>${user.verificationCode}</strong></p>
+               <p>Ce code expire dans 24 heures.</p>`
+      };
+
+      await transporter.sendMail(mailOptions);
+
+      res.status(200).json({ message: 'Inscription réussie ! Un code de vérification à 8 chiffres a été envoyé à votre email.' });
+    } else {
+      res.status(200).json({ message: 'Inscription réussie pour le super admin ! Vous pouvez vous connecter directement.' });
+    }
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Erreur lors de l\'inscription', error: err.message });
+    res.status(500).json({ message: 'Erreur lors de l\'inscription' });
   }
 });
 
-app.post('/api/check-verification', async (req, res) => {
-  const { email } = req.body;
+// Route pour vérifier le code à 8 chiffres
+app.post('/api/verify-code', async (req, res) => {
   try {
+    const { email, code } = req.body;
     const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ message: 'Utilisateur non trouvé' });
-    res.json({ isRegistered: true, isVerified: user.isVerified });
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la vérification du statut', error: err.message });
-  }
-});
 
-app.post('/api/login', async (req, res) => {
-  const { email, password, verificationCode } = req.body;
-  try {
-    const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ message: 'Utilisateur non trouvé' });
-
-    if (!user.isVerified) {
-      if (verificationCode) {
-        // Vérifier le code si fourni
-        if (user.verificationCode !== verificationCode) {
-          return res.status(400).json({ message: 'Code de vérification invalide' });
-        }
-        if (user.verificationCodeExpiry < Date.now()) {
-          return res.status(400).json({ message: 'Code de vérification expiré' });
-        }
-        user.isVerified = true;
-        user.verificationCode = undefined;
-        user.verificationCodeExpiry = undefined;
-        await user.save();
-      } else {
-        // Générer et envoyer un nouveau code si non vérifié et pas de code fourni
-        const newVerificationCode = generateVerificationCode();
-        user.verificationCode = newVerificationCode;
-        user.verificationCodeExpiry = Date.now() + 24 * 60 * 60 * 1000;
-        await user.save();
-
-        const mailOptions = {
-          from: EMAIL_USER,
-          to: email,
-          subject: 'Votre code de vérification',
-          html: `<p>Votre code de vérification est : <strong>${newVerificationCode}</strong></p>
-                 <p>Entrez ce code sur la page de connexion pour vérifier votre compte. Ce code expire dans 24 heures.</p>`,
-        };
-        await transporter.sendMail(mailOptions);
-
-        return res.status(403).json({ message: 'Compte non vérifié. Un code de vérification a été envoyé à votre email.' });
-      }
+    if (!user) {
+      return res.status(400).json({ message: 'Utilisateur non trouvé' });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: 'Mot de passe incorrect' });
+    if (user.isVerified) {
+      return res.status(400).json({ message: 'Compte déjà vérifié' });
+    }
 
-    const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
-    res.json({ token, user: { email, role: user.role } });
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la connexion', error: err.message });
-  }
-});
+    if (user.verificationCode !== code) {
+      return res.status(400).json({ message: 'Code invalide' });
+    }
 
-app.post('/api/verify-code', async (req, res) => {
-  const { email, code } = req.body;
-  try {
-    const user = await User.findOne({ email, verificationCode: code });
-    if (!user) return res.status(400).json({ message: 'Code de vérification invalide' });
-
-    if (user.verificationCodeExpiry < Date.now()) return res.status(400).json({ message: 'Code de vérification expiré' });
+    if (user.verificationCodeExpiry < Date.now()) {
+      return res.status(400).json({ message: 'Code expiré' });
+    }
 
     user.isVerified = true;
     user.verificationCode = undefined;
     user.verificationCodeExpiry = undefined;
     await user.save();
 
-    const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
-    res.status(200).json({ message: 'Compte vérifié avec succès !', token });
+    res.status(200).json({ message: 'Compte vérifié avec succès ! Vous pouvez maintenant vous connecter.' });
   } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la vérification', error: err.message });
+    res.status(500).json({ message: 'Erreur lors de la vérification' });
   }
 });
 
-app.post('/api/resend-code', async (req, res) => {
-  const { email } = req.body;
+// Route de connexion
+app.post('/api/login', async (req, res) => {
   try {
+    const { email, password } = req.body;
     const user = await User.findOne({ email });
-    if (!user) return res.status(400).json({ message: 'Utilisateur non trouvé' });
-    if (user.isVerified) return res.status(400).json({ message: 'Compte déjà vérifié' });
 
-    const verificationCode = generateVerificationCode();
-    user.verificationCode = verificationCode;
-    user.verificationCodeExpiry = Date.now() + 24 * 60 * 60 * 1000;
-    await user.save();
+    if (!user) {
+      return res.status(400).json({ message: 'Utilisateur non trouvé' });
+    }
 
-    const mailOptions = {
-      from: EMAIL_USER,
-      to: email,
-      subject: 'Nouveau code de vérification',
-      html: `<p>Votre nouveau code de vérification est : <strong>${verificationCode}</strong></p>
-             <p>Entrez ce code sur la page de connexion pour vérifier votre compte. Ce code expire dans 24 heures.</p>`,
-    };
-    await transporter.sendMail(mailOptions);
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Mot de passe incorrect' });
+    }
 
-    res.status(200).json({ message: 'Un nouveau code de vérification a été envoyé à votre email.' });
+    if (!user.isVerified) {
+      return res.status(403).json({ message: 'Compte non vérifié. Vérifiez votre email pour le code.', needsVerification: true });
+    }
+
+    const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+    res.json({ token, role: user.role });
   } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de l\'envoi du code', error: err.message });
+    res.status(500).json({ message: 'Erreur lors de la connexion' });
   }
 });
 
-// Nouvel endpoint pour récupérer les données complètes de l'utilisateur connecté
-app.get('/api/user/me', authenticateToken, async (req, res) => {
+// Endpoint pour profil utilisateur
+app.get('/api/user/profile', authenticateToken, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('-password -verificationCode -verificationCodeExpiry');
+    const user = await User.findById(req.user._id).select('-password');
     if (!user) return res.status(404).json({ message: 'Utilisateur non trouvé' });
     res.json(user);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la récupération des données utilisateur', error: err.message });
+    res.status(500).json({ message: 'Erreur serveur' });
   }
 });
 
-// Routes pour les employés
-app.post('/api/employees', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
-  const { firstName, lastName, email, department, position, hireDate, customFields } = req.body;
+// Endpoint pour mise à jour de la photo de profil
+app.post('/api/user/update-profile-photo', authenticateToken, upload.single('profilePhoto'), async (req, res) => {
   try {
-    const employee = new Employee({
-      firstName,
-      lastName,
-      email,
-      department,
-      position,
-      hireDate,
-      customFields,
-      createdBy: req.user._id,
-    });
-    await employee.save();
-
-    const mailOptions = {
-      from: EMAIL_USER,
-      to: email,
-      subject: 'Bienvenue dans l\'équipe !',
-      text: `Bonjour ${firstName}, vous avez été ajouté en tant que ${position} dans le département ${department}.`,
-    };
-    await transporter.sendMail(mailOptions);
-
-    res.status(201).json(employee);
+    const user = await User.findById(req.user._id);
+    if (req.file) {
+      user.profilePhoto = req.file.path;
+      await user.save();
+      res.json({ message: 'Photo mise à jour', profilePhoto: user.profilePhoto });
+    } else {
+      res.status(400).json({ message: 'Aucun fichier fourni' });
+    }
   } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de l\'ajout de l\'employé', error: err.message });
+    res.status(500).json({ message: 'Erreur lors de la mise à jour' });
   }
 });
 
-app.get('/api/employees', authenticateToken, async (req, res) => {
+// Endpoint pour mise à jour du profil (nom/prénom)
+app.post('/api/user/update-profile', authenticateToken, async (req, res) => {
   try {
-    const employees = await Employee.find().populate('createdBy', 'email');
+    const { firstName, lastName } = req.body;
+    const user = await User.findById(req.user._id);
+    user.firstName = firstName;
+    user.lastName = lastName;
+    await user.save();
+    res.json({ firstName: user.firstName, lastName: user.lastName });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de la mise à jour' });
+  }
+});
+
+// Endpoint pour ajouter un certificat
+app.post('/api/user/add-certificate', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    const { title, creationDate, expiryDate } = req.body;
+    const user = await User.findById(req.user._id);
+    const newCert = {
+      title,
+      creationDate,
+      expiryDate,
+      filePath: req.file ? req.file.path : null,
+    };
+    user.certificates.push(newCert);
+    await user.save();
+    res.json({ certificates: user.certificates });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de l\'ajout du certificat' });
+  }
+});
+
+// Endpoint pour modifier un certificat
+app.post('/api/user/edit-certificate', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    const { index, title, creationDate, expiryDate } = req.body;
+    const user = await User.findById(req.user._id);
+    const cert = user.certificates[index];
+    if (!cert) return res.status(404).json({ message: 'Certificat non trouvé' });
+    cert.title = title;
+    cert.creationDate = creationDate;
+    cert.expiryDate = expiryDate;
+    if (req.file) cert.filePath = req.file.path;
+    await user.save();
+    res.json({ certificates: user.certificates });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de la modification du certificat' });
+  }
+});
+
+// Endpoint pour statistiques (pour dashboard)
+app.get('/api/stats', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
+  try {
+    const totalEmployees = await Employee.countDocuments();
+    const expiredCertificates = await User.aggregate([
+      { $unwind: '$certificates' },
+      { $match: { 'certificates.expiryDate': { $lt: new Date() } } },
+      { $count: 'expired' }
+    ]);
+    res.json({ totalEmployees, expiredCertificates: expiredCertificates[0]?.expired || 0 });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+// Endpoint pour liste des employés
+app.get('/api/employees', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
+  try {
+    const employees = await Employee.find();
     res.json(employees);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la récupération des employés', error: err.message });
+    res.status(500).json({ message: 'Erreur serveur' });
   }
 });
 
-app.get('/api/employees/:id', authenticateToken, async (req, res) => {
+// Endpoint pour ajouter un employé (exemple, à adapter si besoin)
+app.post('/api/employees', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
   try {
-    const employee = await Employee.findById(req.params.id).populate('createdBy', 'email');
-    if (!employee) return res.status(404).json({ message: 'Employé non trouvé' });
+    const employee = new Employee({ ...req.body, createdBy: req.user._id });
+    await employee.save();
     res.json(employee);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la récupération de l\'employé', error: err.message });
+    res.status(500).json({ message: 'Erreur lors de l\'ajout de l\'employé' });
   }
 });
 
-app.put('/api/employees/:id', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
-  const { firstName, lastName, email, department, position, hireDate, customFields } = req.body;
+// Endpoint pour liste des formulaires (exemple, à implémenter fully si besoin)
+app.get('/api/forms', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
   try {
-    const employee = await Employee.findByIdAndUpdate(
-      req.params.id,
-      { firstName, lastName, email, department, position, hireDate, customFields },
-      { new: true }
-    );
-    if (!employee) return res.status(404).json({ message: 'Employé non trouvé' });
-    res.json(employee);
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la mise à jour de l\'employé', error: err.message });
-  }
-});
-
-app.delete('/api/employees/:id', authenticateToken, restrictTo('admin'), async (req, res) => {
-  try {
-    const employee = await Employee.findByIdAndDelete(req.params.id);
-    if (!employee) return res.status(404).json({ message: 'Employé non trouvé' });
-    res.json({ message: 'Employé supprimé avec succès' });
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la suppression de l\'employé', error: err.message });
-  }
-});
-
-// Routes pour les formulaires dynamiques
-app.post('/api/forms', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
-  const { name, fields } = req.body;
-  try {
-    const form = new Form({ name, fields, createdBy: req.user._id });
-    await form.save();
-    res.status(201).json(form);
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la création du formulaire', error: err.message });
-  }
-});
-
-app.get('/api/forms', authenticateToken, async (req, res) => {
-  try {
-    const forms = await Form.find().populate('createdBy', 'email');
+    const forms = await Form.find({ createdBy: req.user._id });
     res.json(forms);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la récupération des formulaires', error: err.message });
+    res.status(500).json({ message: 'Erreur serveur' });
   }
 });
 
-app.get('/api/forms/:id', authenticateToken, async (req, res) => {
+// Endpoint pour ajouter un formulaire (exemple)
+app.post('/api/forms', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
   try {
-    const form = await Form.findById(req.params.id).populate('createdBy', 'email');
-    if (!form) return res.status(404).json({ message: 'Formulaire non trouvé' });
+    const form = new Form({ ...req.body, createdBy: req.user._id });
+    await form.save();
     res.json(form);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la récupération du formulaire', error: err.message });
-  }
-});
-
-app.put('/api/forms/:id', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
-  const { name, fields } = req.body;
-  try {
-    const form = await Form.findByIdAndUpdate(req.params.id, { name, fields }, { new: true });
-    if (!form) return res.status(404).json({ message: 'Formulaire non trouvé' });
-    res.json(form);
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la mise à jour du formulaire', error: err.message });
-  }
-});
-
-app.delete('/api/forms/:id', authenticateToken, restrictTo('admin'), async (req, res) => {
-  try {
-    const form = await Form.findByIdAndDelete(req.params.id);
-    if (!form) return res.status(404).json({ message: 'Formulaire non trouvé' });
-    res.json({ message: 'Formulaire supprimé avec succès' });
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la suppression du formulaire', error: err.message });
+    res.status(500).json({ message: 'Erreur lors de l\'ajout du formulaire' });
   }
 });
 
