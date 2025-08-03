@@ -119,6 +119,8 @@ const employeeSchema = new mongoose.Schema({
   department: { type: String, required: true },
   position: { type: String, required: true },
   hireDate: { type: Date, required: true },
+  profilePhoto: { type: String },
+  pdfPath: { type: String },
   customFields: { type: Map, of: mongoose.Schema.Types.Mixed },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 });
@@ -448,14 +450,52 @@ app.get('/api/employees', authenticateToken, restrictTo('admin', 'manager'), asy
   }
 });
 
-// Endpoint pour ajouter un employé (exemple, à adapter si besoin)
-app.post('/api/employees', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
+// Endpoint pour ajouter un employé
+app.post('/api/employees', authenticateToken, restrictTo('admin', 'manager'), upload.fields([{ name: 'profilePhoto', maxCount: 1 }, { name: 'pdf', maxCount: 1 }]), async (req, res) => {
   try {
-    const employee = new Employee({ ...req.body, createdBy: req.user._id });
+    const { firstName, lastName, email, department, position, hireDate } = req.body;
+    const profilePhoto = req.files['profilePhoto'] ? req.files['profilePhoto'][0].path : null;
+    const pdfPath = req.files['pdf'] ? req.files['pdf'][0].path : null;
+    const employee = new Employee({ firstName, lastName, email, department, position, hireDate, profilePhoto, pdfPath, createdBy: req.user._id });
     await employee.save();
     res.json(employee);
   } catch (err) {
     res.status(500).json({ message: 'Erreur lors de l\'ajout de l\'employé' });
+  }
+});
+
+// Endpoint pour mettre à jour un employé
+app.put('/api/employees/:id', authenticateToken, restrictTo('admin', 'manager'), upload.fields([{ name: 'profilePhoto', maxCount: 1 }, { name: 'pdf', maxCount: 1 }]), async (req, res) => {
+  try {
+    const { firstName, lastName, email, department, position, hireDate } = req.body;
+    const employee = await Employee.findById(req.params.id);
+    if (!employee) return res.status(404).json({ message: 'Employé non trouvé' });
+
+    employee.firstName = firstName || employee.firstName;
+    employee.lastName = lastName || employee.lastName;
+    employee.email = email || employee.email;
+    employee.department = department || employee.department;
+    employee.position = position || employee.position;
+    employee.hireDate = hireDate || employee.hireDate;
+
+    if (req.files['profilePhoto']) employee.profilePhoto = req.files['profilePhoto'][0].path;
+    if (req.files['pdf']) employee.pdfPath = req.files['pdf'][0].path;
+
+    await employee.save();
+    res.json(employee);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de la mise à jour de l\'employé' });
+  }
+});
+
+// Endpoint pour supprimer un employé
+app.delete('/api/employees/:id', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
+  try {
+    const employee = await Employee.findByIdAndDelete(req.params.id);
+    if (!employee) return res.status(404).json({ message: 'Employé non trouvé' });
+    res.json({ message: 'Employé supprimé' });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de la suppression de l\'employé' });
   }
 });
 
@@ -500,6 +540,19 @@ app.post('/api/users/:id/approve', authenticateToken, restrictTo('admin'), async
     res.json({ message: 'Utilisateur approuvé' });
   } catch (err) {
     res.status(500).json({ message: 'Erreur lors de l\'approbation' });
+  }
+});
+
+// Endpoint pour rejeter un utilisateur (pour admin)
+app.post('/api/users/:id/reject', authenticateToken, restrictTo('admin'), async (req, res) => {
+  try {
+    const userToReject = await User.findById(req.params.id);
+    if (!userToReject) return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    userToReject.isApproved = false;
+    await userToReject.save();
+    res.json({ message: 'Utilisateur rejeté' });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors du rejet' });
   }
 });
 
