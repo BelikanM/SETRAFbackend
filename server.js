@@ -127,14 +127,7 @@ const employeeSchema = new mongoose.Schema({
 
 const formSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  fields: [
-    {
-      fieldName: { type: String, required: true },
-      fieldType: { type: String, required: true, enum: ['text', 'number', 'date', 'select'] },
-      options: [{ type: String }],
-      required: { type: Boolean, default: false },
-    },
-  ],
+  content: { type: String, required: true }, // Contenu HTML du blog
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 });
 
@@ -499,7 +492,7 @@ app.delete('/api/employees/:id', authenticateToken, restrictTo('admin', 'manager
   }
 });
 
-// Endpoint pour liste des formulaires (exemple, à implémenter fully si besoin)
+// Endpoint pour liste des formulaires (articles de blog)
 app.get('/api/forms', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
   try {
     const forms = await Form.find({ createdBy: req.user._id });
@@ -509,14 +502,44 @@ app.get('/api/forms', authenticateToken, restrictTo('admin', 'manager'), async (
   }
 });
 
-// Endpoint pour ajouter un formulaire (exemple)
+// Endpoint pour ajouter un formulaire (article de blog)
 app.post('/api/forms', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
   try {
-    const form = new Form({ ...req.body, createdBy: req.user._id });
+    const { name, content } = req.body;
+    const form = new Form({ name, content, createdBy: req.user._id });
     await form.save();
     res.json(form);
   } catch (err) {
     res.status(500).json({ message: 'Erreur lors de l\'ajout du formulaire' });
+  }
+});
+
+// Endpoint pour mettre à jour un formulaire (article de blog)
+app.put('/api/forms/:id', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
+  try {
+    const { name, content } = req.body;
+    const form = await Form.findById(req.params.id);
+    if (!form) return res.status(404).json({ message: 'Formulaire non trouvé' });
+    if (form.createdBy.toString() !== req.user._id.toString()) return res.status(403).json({ message: 'Non autorisé' });
+    form.name = name || form.name;
+    form.content = content || form.content;
+    await form.save();
+    res.json(form);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de la mise à jour du formulaire' });
+  }
+});
+
+// Endpoint pour supprimer un formulaire (article de blog)
+app.delete('/api/forms/:id', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
+  try {
+    const form = await Form.findById(req.params.id);
+    if (!form) return res.status(404).json({ message: 'Formulaire non trouvé' });
+    if (form.createdBy.toString() !== req.user._id.toString()) return res.status(403).json({ message: 'Non autorisé' });
+    await Form.deleteOne({ _id: req.params.id });
+    res.json({ message: 'Formulaire supprimé' });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de la suppression du formulaire' });
   }
 });
 
