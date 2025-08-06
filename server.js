@@ -24,7 +24,8 @@ const SUPER_ADMIN_EMAIL = 'nyundumathryme@gmail.com'; // Email du super admin pe
 // Initialisation de l'application Express
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/uploads', express.static('uploads')); // Servir les fichiers statiques pour photos et certificats
 
 // Configuration de Multer pour les uploads
@@ -129,7 +130,7 @@ const formSchema = new mongoose.Schema({
   name: { type: String, required: true },
   content: { type: String, required: true }, // Contenu HTML du blog
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-});
+}, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);
 const Employee = mongoose.model('Employee', employeeSchema);
@@ -423,10 +424,27 @@ app.get('/api/stats', authenticateToken, restrictTo('admin', 'manager'), async (
       { $unwind: '$certificates' },
       { $count: 'total' }
     ]);
+    const expiringSoonCertificates = await User.aggregate([
+      { $unwind: '$certificates' },
+      { $match: { 'certificates.expiryDate': { $gt: new Date(), $lt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) } } },
+      { $count: 'expiringSoon' }
+    ]);
+
+    let userStats = {};
+    if (req.user.role === 'admin') {
+      userStats = {
+        totalUsers: await User.countDocuments(),
+        verifiedUsers: await User.countDocuments({ isVerified: true }),
+        approvedUsers: await User.countDocuments({ isApproved: true }),
+      };
+    }
+
     res.json({ 
       totalEmployees, 
       expiredCertificates: expiredCertificates[0]?.expired || 0,
-      totalCertificates: totalCertificates[0]?.total || 0
+      totalCertificates: totalCertificates[0]?.total || 0,
+      expiringSoonCertificates: expiringSoonCertificates[0]?.expiringSoon || 0,
+      ...userStats
     });
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur' });
@@ -540,6 +558,19 @@ app.delete('/api/forms/:id', authenticateToken, restrictTo('admin', 'manager'), 
     res.json({ message: 'Formulaire supprimé' });
   } catch (err) {
     res.status(500).json({ message: 'Erreur lors de la suppression du formulaire' });
+  }
+});
+
+// Endpoint pour upload de médias pour l'éditeur (images, etc.)
+app.post('/api/upload-media', authenticateToken, restrictTo('admin', 'manager'), upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'Aucun fichier fourni' });
+    }
+    const mediaUrl = `/${req.file.path}`;
+    res.json({ url: mediaUrl });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de l\'upload du média' });
   }
 });
 
