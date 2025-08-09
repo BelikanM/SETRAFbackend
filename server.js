@@ -1,5 +1,3 @@
-// server.js (fichier backend Express complet avec la route GET /api/forms/:id ajoutée et restrictions adaptées pour la lecture des articles)
-
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -542,6 +540,74 @@ app.post('/api/forms', authenticateToken, restrictTo('admin', 'manager'), async 
     const { name, content } = req.body;
     const form = new Form({ name, content, createdBy: req.user._id });
     await form.save();
+
+    // Récupérer tous les emails des utilisateurs
+    const users = await User.find({}, 'email');
+    const emails = users.map(u => u.email);
+
+    // Préparer l'extrait : strip HTML et prendre 200 caractères
+    const stripHtml = (html) => html.replace(/<[^>]*>/g, '');
+    const excerpt = stripHtml(content).substring(0, 200) + '...';
+
+    // Extraire la première image du content (si présente)
+    let photoPath = null;
+    const imgMatch = content.match(/<img\s+src="([^"]+)"/i);
+    if (imgMatch && imgMatch[1]) {
+      photoPath = imgMatch[1].replace(/^\//, ''); // Retirer le / initial si présent, pour path absolu
+      if (!fs.existsSync(photoPath)) photoPath = null; // Vérifier si le fichier existe
+    }
+
+    // Chemin du logo (assumez que vous avez uploads/logo.png)
+    const logoPath = 'uploads/logo.png'; // Ajoutez votre logo dans uploads/logo.png
+
+    // Préparer les attachments pour images inline
+    const attachments = [];
+    if (fs.existsSync(logoPath)) {
+      attachments.push({
+        filename: 'logo.png',
+        path: logoPath,
+        cid: 'logo' // CID pour inline
+      });
+    }
+    if (photoPath && fs.existsSync(photoPath)) {
+      attachments.push({
+        filename: 'article_photo.jpg',
+        path: photoPath,
+        cid: 'articlePhoto' // CID pour inline
+      });
+    }
+
+    // HTML de l'email amélioré
+    let emailHtml = `
+      <div style="text-align: center;">
+        <img src="cid:logo" alt="Logo de l'application" style="max-width: 200px;" />
+      </div>
+      <h1>${name}</h1>
+      <p>${excerpt}</p>
+    `;
+    if (photoPath) {
+      emailHtml += `
+        <img src="cid:articlePhoto" alt="Photo de l'article" style="max-width: 100%;" />
+        <p style="text-align: center; font-style: italic;">Légende : Photo illustrative de l'article</p>
+      `;
+    }
+    emailHtml += `<p>Connectez-vous pour lire la suite.</p>`;
+
+    // Envoyer email à chaque utilisateur (en asynchrone sans bloquer)
+    emails.forEach(email => {
+      const mailOptions = {
+        from: EMAIL_USER,
+        to: email,
+        subject: `Nouvel article publié : ${name}`,
+        html: emailHtml,
+        attachments: attachments
+      };
+      transporter.sendMail(mailOptions, (err, info) => {
+        if (err) console.error(`Erreur lors de l'envoi de l'email à ${email}:`, err);
+        else console.log(`Email envoyé à ${email}:`, info.response);
+      });
+    });
+
     res.json(form);
   } catch (err) {
     res.status(500).json({ message: 'Erreur lors de l\'ajout du formulaire' });
