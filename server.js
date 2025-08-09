@@ -1,3 +1,5 @@
+// server.js (fichier backend Express complet avec la route GET /api/forms/:id ajoutée et restrictions adaptées pour la lecture des articles)
+
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -510,12 +512,26 @@ app.delete('/api/employees/:id', authenticateToken, restrictTo('admin', 'manager
   }
 });
 
-// Endpoint pour liste des formulaires (articles de blog)
-app.get('/api/forms', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
+// Endpoint pour liste des formulaires (articles de blog) - Ouvert à tous les utilisateurs authentifiés
+app.get('/api/forms', authenticateToken, async (req, res) => {
   try {
-    const forms = await Form.find({ createdBy: req.user._id });
+    const forms = await Form.find();
     res.json(forms);
   } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+// Endpoint pour récupérer un article par ID - Ouvert à tous les utilisateurs authentifiés
+app.get('/api/forms/:id', authenticateToken, async (req, res) => {
+  try {
+    const article = await Form.findById(req.params.id);
+    if (!article) {
+      return res.status(404).json({ message: 'Article non trouvé' });
+    }
+    res.json(article);
+  } catch (error) {
+    console.error(error);
     res.status(500).json({ message: 'Erreur serveur' });
   }
 });
