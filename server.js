@@ -130,6 +130,8 @@ const formSchema = new mongoose.Schema({
   name: { type: String, required: true },
   content: { type: String, required: true }, // Contenu HTML du blog
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  views: { type: Number, default: 0 },
+  viewers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
 }, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);
@@ -640,6 +642,33 @@ app.delete('/api/forms/:id', authenticateToken, restrictTo('admin', 'manager'), 
     res.json({ message: 'Formulaire supprimé' });
   } catch (err) {
     res.status(500).json({ message: 'Erreur lors de la suppression du formulaire' });
+  }
+});
+
+// Endpoint pour incrementer les vues d'un article
+app.post('/api/forms/:id/view', authenticateToken, async (req, res) => {
+  try {
+    const form = await Form.findById(req.params.id);
+    if (!form) return res.status(404).json({ message: 'Formulaire non trouvé' });
+    if (!form.viewers.includes(req.user._id)) {
+      form.viewers.push(req.user._id);
+      form.views += 1;
+      await form.save();
+    }
+    res.json({ views: form.views });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de l\'incrémentation des vues' });
+  }
+});
+
+// Endpoint pour récupérer les viewers d'un article
+app.get('/api/forms/:id/viewers', authenticateToken, async (req, res) => {
+  try {
+    const form = await Form.findById(req.params.id).populate('viewers', 'firstName lastName profilePhoto');
+    if (!form) return res.status(404).json({ message: 'Formulaire non trouvé' });
+    res.json(form.viewers);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur lors de la récupération des viewers' });
   }
 });
 
