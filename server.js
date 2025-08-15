@@ -741,6 +741,36 @@ app.post('/api/users/:id/update-role', authenticateToken, restrictTo('admin'), a
   }
 });
 
+// Endpoint pour récupérer les utilisateurs employee et admin avec positions
+app.get('/api/users/with-positions', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
+  try {
+    const users = await User.find({
+      role: { $in: ['employee', 'admin'] },
+      isVerified: true,
+      isApproved: true
+    }).select('-password -verificationCode -verificationCodeExpiry');
+    
+    // Simuler des positions GPS pour la démo (remplacez par vraies positions)
+    const usersWithPositions = users.map(user => ({
+      ...user.toObject(),
+      position: {
+        lat: 48.8566 + (Math.random() - 0.5) * 0.1, // Paris + variation aléatoire
+        lng: 2.3522 + (Math.random() - 0.5) * 0.1,
+        lastUpdate: new Date()
+      }
+    }));
+    
+    res.json(usersWithPositions);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+
+
+
+
+
 // Gestion des erreurs globales
 app.use((err, req, res, next) => {
   console.error(err.stack);
