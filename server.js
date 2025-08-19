@@ -8,6 +8,8 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
+const { Server } = require('socket.io');
 
 // Configuration des variables d'environnement
 const PORT = process.env.PORT || 5000;
@@ -19,14 +21,24 @@ const MONGO_URI = `mongodb+srv://${MONGO_USER}:${MONGO_PASSWORD}@${MONGO_CLUSTER
 const JWT_SECRET = process.env.JWT_SECRET;
 const EMAIL_USER = process.env.EMAIL_USER;
 const EMAIL_PASS = process.env.EMAIL_PASS;
-const SUPER_ADMIN_EMAIL = 'nyundumathryme@gmail.com'; // Email du super admin permanent
+const SUPER_ADMIN_EMAIL = 'nyundumathryme@gmail.com';
 
 // Initialisation de l'application Express
 const app = express();
+const server = http.createServer(app);
+
+// Configuration Socket.io
+const io = new Server(server, {
+  cors: {
+    origin: "http://localhost:3000",
+    methods: ["GET", "POST"]
+  }
+});
+
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-app.use('/uploads', express.static('uploads')); // Servir les fichiers statiques pour photos et certificats
+app.use('/uploads', express.static('uploads'));
 
 // Configuration de Multer pour les uploads
 const storage = multer.diskStorage({
@@ -43,44 +55,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Connexion à MongoDB
-mongoose.connect(MONGO_URI)
-  .then(async () => {
-    console.log('Connecté à MongoDB');
-    await createSuperAdmin();
-  })
-  .catch(err => console.error('Erreur de connexion à MongoDB:', err));
-
-// Fonction pour activer/forcer le super admin sans vérification
-async function createSuperAdmin() {
-  const superEmail = SUPER_ADMIN_EMAIL;
-  let superUser = await User.findOne({ email: superEmail });
-  const defaultPassword = 'superadminpassword'; // Changez cela par un mot de passe sécurisé en production
-  const hashedPassword = await bcrypt.hash(defaultPassword, 10);
-
-  if (!superUser) {
-    superUser = new User({
-      email: superEmail,
-      password: hashedPassword,
-      role: 'admin',
-      isVerified: true,
-      isApproved: true,
-      firstName: 'Super',
-      lastName: 'Admin',
-    });
-    await superUser.save();
-    console.log('Super Admin créé avec succès. Mot de passe par défaut : ' + defaultPassword);
-  } else {
-    superUser.role = 'admin';
-    superUser.isVerified = true;
-    superUser.isApproved = true;
-    superUser.password = hashedPassword; // Réinitialiser le mot de passe si nécessaire
-    await superUser.save();
-    console.log('Super Admin activé avec succès. Mot de passe réinitialisé à : ' + defaultPassword);
-  }
-}
-
-// Configuration de Nodemailer
+// ✅ CORRECTION NODEMAILER
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -103,7 +78,7 @@ const userSchema = new mongoose.Schema({
   profilePhoto: { type: String },
   nip: { type: String },
   passport: { type: String },
-  professionalCard: { type: String }, // Carte professionnelle pour admin
+  professionalCard: { type: String },
   certificates: [{
     title: { type: String, required: true },
     creationDate: { type: Date, required: true },
@@ -111,6 +86,8 @@ const userSchema = new mongoose.Schema({
     filePath: { type: String },
     imagePath: { type: String },
   }],
+  isOnline: { type: Boolean, default: false },
+  lastSeen: { type: Date, default: Date.now }
 });
 
 const employeeSchema = new mongoose.Schema({
@@ -128,17 +105,153 @@ const employeeSchema = new mongoose.Schema({
 
 const formSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  content: { type: String, required: true }, // Contenu HTML du blog
+  content: { type: String, required: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   views: { type: Number, default: 0 },
   viewers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
 }, { timestamps: true });
 
+const messageSchema = new mongoose.Schema({
+  sender: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  content: { type: String, required: true },
+  timestamp: { type: Date, default: Date.now },
+  isGroupMessage: { type: Boolean, default: true }
+});
+
 const User = mongoose.model('User', userSchema);
 const Employee = mongoose.model('Employee', employeeSchema);
 const Form = mongoose.model('Form', formSchema);
+const Message = mongoose.model('Message', messageSchema);
 
-// Middleware pour vérifier le JWT
+// Connexion à MongoDB
+mongoose.connect(MONGO_URI)
+  .then(async () => {
+    console.log('✅ Connecté à MongoDB');
+    await createSuperAdmin();
+  })
+  .catch(err => console.error('❌ Erreur de connexion à MongoDB:', err));
+
+// Fonction pour activer/forcer le super admin
+async function createSuperAdmin() {
+  const superEmail = SUPER_ADMIN_EMAIL;
+  let superUser = await User.findOne({ email: superEmail });
+  const defaultPassword = 'superadminpassword';
+  const hashedPassword = await bcrypt.hash(defaultPassword, 10);
+
+  if (!superUser) {
+    superUser = new User({
+      email: superEmail,
+      password: hashedPassword,
+      role: 'admin',
+      isVerified: true,
+      isApproved: true,
+      firstName: 'Super',
+      lastName: 'Admin',
+    });
+    await superUser.save();
+    console.log('🎯 Super Admin créé avec succès. Mot de passe :', defaultPassword);
+  } else {
+    superUser.role = 'admin';
+    superUser.isVerified = true;
+    superUser.isApproved = true;
+    superUser.password = hashedPassword;
+    await superUser.save();
+    console.log('🎯 Super Admin activé avec succès. Mot de passe :', defaultPassword);
+  }
+}
+
+// Socket.io pour le chat en temps réel
+io.on('connection', (socket) => {
+  console.log('🎮 Utilisateur connecté:', socket.id);
+
+  socket.on('authenticate', async (token) => {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      const user = await User.findById(decoded.userId);
+      if (user) {
+        socket.userId = user._id.toString();
+        socket.user = user;
+        
+        await User.findByIdAndUpdate(user._id, { 
+          isOnline: true, 
+          lastSeen: new Date() 
+        });
+        
+        socket.join('general');
+        
+        socket.broadcast.emit('user-online', {
+          userId: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName
+        });
+        
+        console.log(`👤 Utilisateur authentifié: ${user.firstName} ${user.lastName}`);
+      }
+    } catch (err) {
+      console.error('❌ Erreur authentification socket:', err);
+    }
+  });
+
+  socket.on('send-group-message', async (data) => {
+    try {
+      if (!socket.userId) return;
+      
+      const { content } = data;
+      
+      const message = new Message({
+        sender: socket.userId,
+        content,
+        isGroupMessage: true
+      });
+      
+      await message.save();
+      await message.populate('sender', 'firstName lastName profilePhoto');
+      
+      io.to('general').emit('new-group-message', {
+        _id: message._id,
+        content: message.content,
+        timestamp: message.timestamp,
+        sender: {
+          _id: message.sender._id,
+          firstName: message.sender.firstName,
+          lastName: message.sender.lastName,
+          profilePhoto: message.sender.profilePhoto
+        }
+      });
+      
+    } catch (err) {
+      console.error('❌ Erreur envoi message:', err);
+    }
+  });
+
+  socket.on('typing', (data) => {
+    if (socket.user) {
+      socket.broadcast.to('general').emit('user-typing', {
+        userId: socket.userId,
+        firstName: socket.user.firstName,
+        lastName: socket.user.lastName,
+        isTyping: data.isTyping
+      });
+    }
+  });
+
+  socket.on('disconnect', async () => {
+    if (socket.userId) {
+      await User.findByIdAndUpdate(socket.userId, { 
+        isOnline: false, 
+        lastSeen: new Date() 
+      });
+      
+      socket.broadcast.emit('user-offline', {
+        userId: socket.userId
+      });
+    }
+    
+    console.log('🚪 Utilisateur déconnecté:', socket.id);
+  });
+});
+
+// Middleware JWT
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -154,7 +267,7 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Middleware pour vérifier les rôles
+// Middleware rôles
 const restrictTo = (...roles) => {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) {
@@ -164,7 +277,7 @@ const restrictTo = (...roles) => {
   };
 };
 
-// Fonction pour générer un code à 8 chiffres
+// Générer code vérification
 const generateVerificationCode = () => {
   return Math.floor(10000000 + Math.random() * 90000000).toString();
 };
@@ -177,23 +290,19 @@ app.post('/api/register', upload.fields([
 ]), async (req, res) => {
   try {
     const { email, password, firstName, lastName, role, nip, passport, certificatesData } = req.body;
-    const certificatesParsed = JSON.parse(certificatesData);
+    const certificatesParsed = JSON.parse(certificatesData || '[]');
 
-    // Vérifier la carte professionnelle pour admin
     if (role === 'admin' && !req.files.professionalCard) {
       return res.status(400).json({ message: 'La carte professionnelle est obligatoire pour les administrateurs.' });
     }
 
-    // Vérifier si l'email existe déjà
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ message: 'Cet email est déjà utilisé.' });
     }
 
-    // Hacher le mot de passe
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Gérer les fichiers
     const profilePhotoPath = req.files.profilePhoto ? req.files.profilePhoto[0].path : null;
     const professionalCardPath = req.files.professionalCard ? req.files.professionalCard[0].path : null;
     const certificates = certificatesParsed.map((cert, index) => ({
@@ -212,7 +321,7 @@ app.post('/api/register', upload.fields([
       nip,
       passport,
       certificates,
-      isVerified: email === SUPER_ADMIN_EMAIL, // Super admin isVerified = true
+      isVerified: email === SUPER_ADMIN_EMAIL,
     });
 
     if (role === 'admin' && email !== SUPER_ADMIN_EMAIL) {
@@ -222,12 +331,10 @@ app.post('/api/register', upload.fields([
     await user.save();
 
     if (email !== SUPER_ADMIN_EMAIL) {
-      // Générer le code de vérification à 8 chiffres
       user.verificationCode = generateVerificationCode();
-      user.verificationCodeExpiry = Date.now() + 24 * 60 * 60 * 1000; // 24 heures
+      user.verificationCodeExpiry = Date.now() + 24 * 60 * 60 * 1000;
       await user.save();
 
-      // Envoyer l'email avec le code via Nodemailer
       const mailOptions = {
         from: process.env.EMAIL_USER,
         to: email,
@@ -248,7 +355,7 @@ app.post('/api/register', upload.fields([
   }
 });
 
-// Route pour vérifier le code à 8 chiffres
+// Route pour vérifier le code
 app.post('/api/verify-code', async (req, res) => {
   try {
     const { email, code } = req.body;
@@ -311,7 +418,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Endpoint pour profil utilisateur
+// Profil utilisateur
 app.get('/api/user/profile', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select('-password');
@@ -322,7 +429,7 @@ app.get('/api/user/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// Endpoint pour mise à jour de la photo de profil
+// Mise à jour photo de profil
 app.post('/api/user/update-profile-photo', authenticateToken, upload.single('profilePhoto'), async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
@@ -338,7 +445,7 @@ app.post('/api/user/update-profile-photo', authenticateToken, upload.single('pro
   }
 });
 
-// Endpoint pour mise à jour du profil (nom/prénom)
+// Mise à jour profil
 app.post('/api/user/update-profile', authenticateToken, async (req, res) => {
   try {
     const { firstName, lastName } = req.body;
@@ -352,7 +459,7 @@ app.post('/api/user/update-profile', authenticateToken, async (req, res) => {
   }
 });
 
-// Endpoint pour ajouter un certificat
+// Ajouter certificat
 app.post('/api/user/add-certificate', authenticateToken, upload.fields([
   { name: 'file', maxCount: 1 },
   { name: 'image', maxCount: 1 }
@@ -375,7 +482,7 @@ app.post('/api/user/add-certificate', authenticateToken, upload.fields([
   }
 });
 
-// Endpoint pour modifier un certificat
+// Modifier certificat
 app.post('/api/user/edit-certificate', authenticateToken, upload.fields([
   { name: 'file', maxCount: 1 },
   { name: 'image', maxCount: 1 }
@@ -397,7 +504,7 @@ app.post('/api/user/edit-certificate', authenticateToken, upload.fields([
   }
 });
 
-// Endpoint pour supprimer un certificat
+// Supprimer certificat
 app.post('/api/user/delete-certificate', authenticateToken, async (req, res) => {
   try {
     const { index } = req.body;
@@ -413,7 +520,7 @@ app.post('/api/user/delete-certificate', authenticateToken, async (req, res) => 
   }
 });
 
-// Endpoint pour statistiques (pour dashboard)
+// Statistiques
 app.get('/api/stats', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
   try {
     const totalEmployees = await Employee.countDocuments();
@@ -453,7 +560,7 @@ app.get('/api/stats', authenticateToken, restrictTo('admin', 'manager'), async (
   }
 });
 
-// Endpoint pour liste des employés
+// Liste employés
 app.get('/api/employees', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
   try {
     const employees = await Employee.find();
@@ -463,7 +570,7 @@ app.get('/api/employees', authenticateToken, restrictTo('admin', 'manager'), asy
   }
 });
 
-// Endpoint pour ajouter un employé
+// Ajouter employé
 app.post('/api/employees', authenticateToken, restrictTo('admin', 'manager'), upload.fields([{ name: 'profilePhoto', maxCount: 1 }, { name: 'pdf', maxCount: 1 }]), async (req, res) => {
   try {
     const { firstName, lastName, email, department, position, hireDate } = req.body;
@@ -477,7 +584,7 @@ app.post('/api/employees', authenticateToken, restrictTo('admin', 'manager'), up
   }
 });
 
-// Endpoint pour mettre à jour un employé
+// Mettre à jour employé
 app.put('/api/employees/:id', authenticateToken, restrictTo('admin', 'manager'), upload.fields([{ name: 'profilePhoto', maxCount: 1 }, { name: 'pdf', maxCount: 1 }]), async (req, res) => {
   try {
     const { firstName, lastName, email, department, position, hireDate } = req.body;
@@ -501,7 +608,7 @@ app.put('/api/employees/:id', authenticateToken, restrictTo('admin', 'manager'),
   }
 });
 
-// Endpoint pour supprimer un employé
+// Supprimer employé
 app.delete('/api/employees/:id', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
   try {
     const employee = await Employee.findByIdAndDelete(req.params.id);
@@ -512,7 +619,7 @@ app.delete('/api/employees/:id', authenticateToken, restrictTo('admin', 'manager
   }
 });
 
-// Endpoint pour liste des formulaires (articles de blog) - Ouvert à tous les utilisateurs authentifiés
+// Liste formulaires
 app.get('/api/forms', authenticateToken, async (req, res) => {
   try {
     const forms = await Form.find();
@@ -522,7 +629,7 @@ app.get('/api/forms', authenticateToken, async (req, res) => {
   }
 });
 
-// Endpoint pour récupérer un article par ID - Ouvert à tous les utilisateurs authentifiés
+// Récupérer article par ID
 app.get('/api/forms/:id', authenticateToken, async (req, res) => {
   try {
     const article = await Form.findById(req.params.id);
@@ -536,50 +643,44 @@ app.get('/api/forms/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Endpoint pour ajouter un formulaire (article de blog)
+// Ajouter formulaire
 app.post('/api/forms', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
   try {
     const { name, content } = req.body;
     const form = new Form({ name, content, createdBy: req.user._id });
     await form.save();
 
-    // Récupérer tous les emails des utilisateurs
     const users = await User.find({}, 'email');
     const emails = users.map(u => u.email);
 
-    // Préparer l'extrait : strip HTML et prendre 200 caractères
     const stripHtml = (html) => html.replace(/<[^>]*>/g, '');
     const excerpt = stripHtml(content).substring(0, 200) + '...';
 
-    // Extraire la première image du content (si présente)
     let photoPath = null;
     const imgMatch = content.match(/<img\s+src="([^"]+)"/i);
     if (imgMatch && imgMatch[1]) {
-      photoPath = imgMatch[1].replace(/^\//, ''); // Retirer le / initial si présent, pour path absolu
-      if (!fs.existsSync(photoPath)) photoPath = null; // Vérifier si le fichier existe
+      photoPath = imgMatch[1].replace(/^\//, '');
+      if (!fs.existsSync(photoPath)) photoPath = null;
     }
 
-    // Chemin du logo (assumez que vous avez uploads/logo.png)
-    const logoPath = 'uploads/logo.png'; // Ajoutez votre logo dans uploads/logo.png
+    const logoPath = 'uploads/logo.png';
 
-    // Préparer les attachments pour images inline
     const attachments = [];
     if (fs.existsSync(logoPath)) {
       attachments.push({
         filename: 'logo.png',
         path: logoPath,
-        cid: 'logo' // CID pour inline
+        cid: 'logo'
       });
     }
     if (photoPath && fs.existsSync(photoPath)) {
       attachments.push({
         filename: 'article_photo.jpg',
         path: photoPath,
-        cid: 'articlePhoto' // CID pour inline
+        cid: 'articlePhoto'
       });
     }
 
-    // HTML de l'email amélioré
     let emailHtml = `
       <div style="text-align: center;">
         <img src="cid:logo" alt="Logo de l'application" style="max-width: 200px;" />
@@ -595,7 +696,6 @@ app.post('/api/forms', authenticateToken, restrictTo('admin', 'manager'), async 
     }
     emailHtml += `<p>Connectez-vous pour lire la suite.</p>`;
 
-    // Envoyer email à chaque utilisateur (en asynchrone sans bloquer)
     emails.forEach(email => {
       const mailOptions = {
         from: EMAIL_USER,
@@ -616,7 +716,7 @@ app.post('/api/forms', authenticateToken, restrictTo('admin', 'manager'), async 
   }
 });
 
-// Endpoint pour mettre à jour un formulaire (article de blog)
+// Mettre à jour formulaire
 app.put('/api/forms/:id', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
   try {
     const { name, content } = req.body;
@@ -632,7 +732,7 @@ app.put('/api/forms/:id', authenticateToken, restrictTo('admin', 'manager'), asy
   }
 });
 
-// Endpoint pour supprimer un formulaire (article de blog)
+// Supprimer formulaire
 app.delete('/api/forms/:id', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
   try {
     const form = await Form.findById(req.params.id);
@@ -645,7 +745,7 @@ app.delete('/api/forms/:id', authenticateToken, restrictTo('admin', 'manager'), 
   }
 });
 
-// Endpoint pour incrementer les vues d'un article
+// Incrementer vues article
 app.post('/api/forms/:id/view', authenticateToken, async (req, res) => {
   try {
     const form = await Form.findById(req.params.id);
@@ -661,7 +761,7 @@ app.post('/api/forms/:id/view', authenticateToken, async (req, res) => {
   }
 });
 
-// Endpoint pour récupérer les viewers d'un article
+// Viewers d'un article
 app.get('/api/forms/:id/viewers', authenticateToken, async (req, res) => {
   try {
     const form = await Form.findById(req.params.id).populate('viewers', 'firstName lastName profilePhoto');
@@ -672,7 +772,7 @@ app.get('/api/forms/:id/viewers', authenticateToken, async (req, res) => {
   }
 });
 
-// Endpoint pour upload de médias pour l'éditeur (images, etc.)
+// Upload média
 app.post('/api/upload-media', authenticateToken, restrictTo('admin', 'manager'), upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
@@ -685,7 +785,33 @@ app.post('/api/upload-media', authenticateToken, restrictTo('admin', 'manager'),
   }
 });
 
-// Endpoint pour liste des utilisateurs (pour admin)
+// ✅ ENDPOINTS CHAT
+app.get('/api/users/chat', authenticateToken, async (req, res) => {
+  try {
+    const users = await User.find({
+      isVerified: true,
+      isApproved: true
+    }).select('firstName lastName profilePhoto role isOnline lastSeen');
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+app.get('/api/chat/messages', authenticateToken, async (req, res) => {
+  try {
+    const messages = await Message.find({ isGroupMessage: true })
+      .populate('sender', 'firstName lastName profilePhoto')
+      .sort({ timestamp: -1 })
+      .limit(50);
+    
+    res.json(messages.reverse());
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+// Liste utilisateurs (admin)
 app.get('/api/users', authenticateToken, restrictTo('admin'), async (req, res) => {
   try {
     const users = await User.find().select('-password -verificationCode -verificationCodeExpiry');
@@ -695,7 +821,7 @@ app.get('/api/users', authenticateToken, restrictTo('admin'), async (req, res) =
   }
 });
 
-// Endpoint pour approuver un utilisateur (pour admin)
+// Approuver utilisateur
 app.post('/api/users/:id/approve', authenticateToken, restrictTo('admin'), async (req, res) => {
   try {
     const userToApprove = await User.findById(req.params.id);
@@ -708,7 +834,7 @@ app.post('/api/users/:id/approve', authenticateToken, restrictTo('admin'), async
   }
 });
 
-// Endpoint pour rejeter un utilisateur (pour admin)
+// Rejeter utilisateur
 app.post('/api/users/:id/reject', authenticateToken, restrictTo('admin'), async (req, res) => {
   try {
     const userToReject = await User.findById(req.params.id);
@@ -721,7 +847,7 @@ app.post('/api/users/:id/reject', authenticateToken, restrictTo('admin'), async 
   }
 });
 
-// Endpoint pour mettre à jour le rôle d'un utilisateur (pour admin)
+// Mettre à jour rôle
 app.post('/api/users/:id/update-role', authenticateToken, restrictTo('admin'), async (req, res) => {
   try {
     const { role } = req.body;
@@ -732,7 +858,7 @@ app.post('/api/users/:id/update-role', authenticateToken, restrictTo('admin'), a
     if (role === 'admin') {
       userToUpdate.isApproved = true;
     } else {
-      userToUpdate.isApproved = true; // Reset pour non-admin
+      userToUpdate.isApproved = true;
     }
     await userToUpdate.save();
     res.json({ message: 'Rôle mis à jour', role: userToUpdate.role });
@@ -741,7 +867,7 @@ app.post('/api/users/:id/update-role', authenticateToken, restrictTo('admin'), a
   }
 });
 
-// Endpoint pour récupérer les utilisateurs employee et admin avec positions
+// Utilisateurs avec positions
 app.get('/api/users/with-positions', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
   try {
     const users = await User.find({
@@ -750,11 +876,10 @@ app.get('/api/users/with-positions', authenticateToken, restrictTo('admin', 'man
       isApproved: true
     }).select('-password -verificationCode -verificationCodeExpiry');
     
-    // Simuler des positions GPS pour la démo (remplacez par vraies positions)
     const usersWithPositions = users.map(user => ({
       ...user.toObject(),
       position: {
-        lat: 48.8566 + (Math.random() - 0.5) * 0.1, // Paris + variation aléatoire
+        lat: 48.8566 + (Math.random() - 0.5) * 0.1,
         lng: 2.3522 + (Math.random() - 0.5) * 0.1,
         lastUpdate: new Date()
       }
@@ -766,18 +891,14 @@ app.get('/api/users/with-positions', authenticateToken, restrictTo('admin', 'man
   }
 });
 
-
-
-
-
-
-// Gestion des erreurs globales
+// Gestion erreurs globales
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ message: 'Erreur serveur', error: err.message });
 });
 
-// Démarrage du serveur
-app.listen(PORT, () => {
-  console.log(`Serveur démarré sur le port ${PORT}`);
+// Démarrage serveur
+server.listen(PORT, () => {
+  console.log(`🚀 Serveur + Socket.io démarré sur le port ${PORT}`);
 });
+
