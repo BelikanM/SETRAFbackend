@@ -1,4 +1,4 @@
-
+// server.js (fichier backend corrigé)
 
 require('dotenv').config();
 const express = require('express');
@@ -323,34 +323,13 @@ app.post('/api/register', upload.fields([
       nip,
       passport,
       certificates,
-      isVerified: email === SUPER_ADMIN_EMAIL,
+      isVerified: true,
+      isApproved: true,
     });
-
-    if (role === 'admin' && email !== SUPER_ADMIN_EMAIL) {
-      user.isApproved = false;
-    }
 
     await user.save();
 
-    if (email !== SUPER_ADMIN_EMAIL) {
-      user.verificationCode = generateVerificationCode();
-      user.verificationCodeExpiry = Date.now() + 24 * 60 * 60 * 1000;
-      await user.save();
-
-      const mailOptions = {
-        from: process.env.EMAIL_USER,
-        to: email,
-        subject: 'Vérification de votre compte',
-        html: `<p>Merci pour votre inscription ! Votre code de vérification est : <strong>${user.verificationCode}</strong></p>
-               <p>Ce code expire dans 24 heures.</p>`
-      };
-
-      await transporter.sendMail(mailOptions);
-
-      res.status(200).json({ message: 'Inscription réussie ! Un code de vérification à 8 chiffres a été envoyé à votre email.' });
-    } else {
-      res.status(200).json({ message: 'Inscription réussie pour le super admin ! Vous pouvez vous connecter directement.' });
-    }
+    res.status(200).json({ message: 'Inscription réussie ! Vous pouvez vous connecter directement.' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Erreur lors de l\'inscription' });
@@ -403,14 +382,6 @@ app.post('/api/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Mot de passe incorrect' });
-    }
-
-    if (!user.isVerified) {
-      return res.status(403).json({ message: 'Compte non vérifié. Vérifiez votre email pour le code.', needsVerification: true });
-    }
-
-    if (user.role === 'admin' && !user.isApproved) {
-      return res.status(403).json({ message: 'Compte en attente d\'approbation par un administrateur.', needsApproval: true });
     }
 
     const token = jwt.sign({ userId: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
@@ -790,10 +761,7 @@ app.post('/api/upload-media', authenticateToken, restrictTo('admin', 'manager'),
 // ✅ ENDPOINTS CHAT
 app.get('/api/users/chat', authenticateToken, async (req, res) => {
   try {
-    const users = await User.find({
-      isVerified: true,
-      isApproved: true
-    }).select('firstName lastName profilePhoto role isOnline lastSeen');
+    const users = await User.find().select('firstName lastName profilePhoto role isOnline lastSeen');
     res.json(users);
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur' });
@@ -903,4 +871,3 @@ app.use((err, req, res, next) => {
 server.listen(PORT, () => {
   console.log(`🚀 Serveur + Socket.io démarré sur le port ${PORT}`);
 });
-
