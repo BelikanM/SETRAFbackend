@@ -226,6 +226,60 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('edit-message', async (data) => {
+    try {
+      if (!socket.userId) return;
+
+      const { messageId, newContent } = data;
+
+      const message = await Message.findById(messageId);
+
+      if (!message) return;
+
+      if (message.sender.toString() !== socket.userId) return;
+
+      message.content = newContent;
+
+      await message.save();
+
+      await message.populate('sender', 'firstName lastName profilePhoto');
+
+      io.to('general').emit('message-updated', {
+        _id: message._id,
+        content: message.content,
+        timestamp: message.timestamp,
+        sender: {
+          _id: message.sender._id,
+          firstName: message.sender.firstName,
+          lastName: message.sender.lastName,
+          profilePhoto: message.sender.profilePhoto
+        }
+      });
+    } catch (err) {
+      console.error('❌ Erreur modification message:', err);
+    }
+  });
+
+  socket.on('delete-message', async (data) => {
+    try {
+      if (!socket.userId) return;
+
+      const { messageId } = data;
+
+      const message = await Message.findById(messageId);
+
+      if (!message) return;
+
+      if (message.sender.toString() !== socket.userId) return;
+
+      await Message.deleteOne({ _id: messageId });
+
+      io.to('general').emit('message-deleted', messageId);
+    } catch (err) {
+      console.error('❌ Erreur suppression message:', err);
+    }
+  });
+
   socket.on('typing', (data) => {
     if (socket.user) {
       socket.broadcast.to('general').emit('user-typing', {
@@ -746,7 +800,7 @@ app.get('/api/forms/:id/viewers', authenticateToken, async (req, res) => {
 });
 
 // Upload média
-app.post('/api/upload-media', authenticateToken, restrictTo('admin', 'manager'), upload.single('image'), async (req, res) => {
+app.post('/api/upload-media', authenticateToken, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'Aucun fichier fourni' });
