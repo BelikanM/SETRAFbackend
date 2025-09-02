@@ -463,6 +463,30 @@ app.post('/api/verify-code', async (req, res) => {
   }
 });
 
+// Feeds: récupérer uniquement les images et vidéos depuis Chat
+app.get("/api/feeds", authenticateToken, async (req, res) => {
+  try {
+    const feeds = await Chat.find({
+      $or: [
+        { imageUrl: { $exists: true, $ne: "" } },
+        { videoUrl: { $exists: true, $ne: "" } },
+      ],
+    })
+      .populate("sender", "firstName lastName profilePhoto") // infos auteur
+      .sort({ createdAt: -1 });
+
+    res.json(feeds);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Erreur serveur" });
+  }
+});
+
+
+
+
+
+
 // Route de connexion
 app.post('/api/login', async (req, res) => {
   try {
