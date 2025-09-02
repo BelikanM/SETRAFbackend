@@ -12,7 +12,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 
 // Configuration des variables d'environnement
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 4000;
 const MONGO_USER = process.env.MONGO_USER;
 const MONGO_PASSWORD = encodeURIComponent(process.env.MONGO_PASSWORD);
 const MONGO_CLUSTER = process.env.MONGO_CLUSTER;
