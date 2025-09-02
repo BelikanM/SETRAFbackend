@@ -1,5 +1,3 @@
-// server.js (backend adapté avec likes/dislikes et endpoint pour médias seulement)
-
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -118,8 +116,13 @@ const messageSchema = new mongoose.Schema({
   content: { type: String, required: true },
   timestamp: { type: Date, default: Date.now },
   isGroupMessage: { type: Boolean, default: true },
-  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Ajouté pour likes
-  dislikes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }] // Ajouté pour dislikes
+  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  dislikes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  comments: [{
+    sender: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    content: { type: String, required: true },
+    timestamp: { type: Date, default: Date.now },
+  }]
 });
 
 const User = mongoose.model('User', userSchema);
@@ -207,7 +210,8 @@ io.on('connection', (socket) => {
         content,
         isGroupMessage: true,
         likes: [],
-        dislikes: []
+        dislikes: [],
+        comments: []
       });
       
       await message.save();
@@ -317,6 +321,37 @@ io.on('connection', (socket) => {
       io.to('general').emit('message-disliked', message);
     } catch (err) {
       console.error('❌ Erreur dislike message:', err);
+    }
+  });
+
+  // Ajouté: Gestion commentaire
+  socket.on('add-comment', async (data) => {
+    try {
+      if (!socket.userId) return;
+      const { messageId, content } = data;
+      const message = await Message.findById(messageId);
+      if (!message) return;
+
+      const newComment = {
+        sender: socket.userId,
+        content,
+        timestamp: new Date()
+      };
+      message.comments.push(newComment);
+
+      await message.save();
+      await message.populate({
+        path: 'sender',
+        select: 'firstName lastName profilePhoto email'
+      });
+      await message.populate({
+        path: 'comments.sender',
+        select: 'firstName lastName profilePhoto'
+      });
+
+      io.to('general').emit('new-comment', message);
+    } catch (err) {
+      console.error('❌ Erreur ajout commentaire:', err);
     }
   });
 
@@ -481,11 +516,6 @@ app.get("/api/feeds", authenticateToken, async (req, res) => {
     res.status(500).json({ message: "Erreur serveur" });
   }
 });
-
-
-
-
-
 
 // Route de connexion
 app.post('/api/login', async (req, res) => {
@@ -890,6 +920,7 @@ app.get('/api/chat/messages', authenticateToken, async (req, res) => {
   try {
     const messages = await Message.find({ isGroupMessage: true })
       .populate('sender', 'firstName lastName profilePhoto email') // Ajout email
+      .populate('comments.sender', 'firstName lastName profilePhoto')
       .sort({ timestamp: -1 })
       .limit(50);
     
@@ -910,6 +941,7 @@ app.get('/api/chat/media-messages', authenticateToken, async (req, res) => {
       ]
     })
       .populate('sender', 'firstName lastName profilePhoto email')
+      .populate('comments.sender', 'firstName lastName profilePhoto')
       .sort({ timestamp: -1 })
       .limit(50);
     
