@@ -1,4 +1,4 @@
-// server.js (fichier backend corrigé)
+// server.js (backend adapté avec likes/dislikes et endpoint pour médias seulement)
 
 require('dotenv').config();
 const express = require('express');
@@ -117,7 +117,9 @@ const messageSchema = new mongoose.Schema({
   sender: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   content: { type: String, required: true },
   timestamp: { type: Date, default: Date.now },
-  isGroupMessage: { type: Boolean, default: true }
+  isGroupMessage: { type: Boolean, default: true },
+  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Ajouté pour likes
+  dislikes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }] // Ajouté pour dislikes
 });
 
 const User = mongoose.model('User', userSchema);
@@ -203,23 +205,15 @@ io.on('connection', (socket) => {
       const message = new Message({
         sender: socket.userId,
         content,
-        isGroupMessage: true
+        isGroupMessage: true,
+        likes: [],
+        dislikes: []
       });
       
       await message.save();
-      await message.populate('sender', 'firstName lastName profilePhoto');
+      await message.populate('sender', 'firstName lastName profilePhoto email'); // Ajout email pour le composant
       
-      io.to('general').emit('new-group-message', {
-        _id: message._id,
-        content: message.content,
-        timestamp: message.timestamp,
-        sender: {
-          _id: message.sender._id,
-          firstName: message.sender.firstName,
-          lastName: message.sender.lastName,
-          profilePhoto: message.sender.profilePhoto
-        }
-      });
+      io.to('general').emit('new-group-message', message);
       
     } catch (err) {
       console.error('❌ Erreur envoi message:', err);
@@ -242,19 +236,9 @@ io.on('connection', (socket) => {
 
       await message.save();
 
-      await message.populate('sender', 'firstName lastName profilePhoto');
+      await message.populate('sender', 'firstName lastName profilePhoto email');
 
-      io.to('general').emit('message-updated', {
-        _id: message._id,
-        content: message.content,
-        timestamp: message.timestamp,
-        sender: {
-          _id: message.sender._id,
-          firstName: message.sender.firstName,
-          lastName: message.sender.lastName,
-          profilePhoto: message.sender.profilePhoto
-        }
-      });
+      io.to('general').emit('message-updated', message);
     } catch (err) {
       console.error('❌ Erreur modification message:', err);
     }
@@ -277,6 +261,62 @@ io.on('connection', (socket) => {
       io.to('general').emit('message-deleted', messageId);
     } catch (err) {
       console.error('❌ Erreur suppression message:', err);
+    }
+  });
+
+  // Ajouté: Gestion like
+  socket.on('like-message', async (data) => {
+    try {
+      if (!socket.userId) return;
+      const { messageId } = data;
+      const message = await Message.findById(messageId);
+      if (!message) return;
+
+      const userId = socket.userId;
+      const index = message.likes.indexOf(userId);
+      if (index === -1) {
+        message.likes.push(userId);
+        // Retirer dislike si présent
+        const dislikeIndex = message.dislikes.indexOf(userId);
+        if (dislikeIndex !== -1) message.dislikes.splice(dislikeIndex, 1);
+      } else {
+        message.likes.splice(index, 1);
+      }
+
+      await message.save();
+      await message.populate('sender', 'firstName lastName profilePhoto email');
+
+      io.to('general').emit('message-liked', message);
+    } catch (err) {
+      console.error('❌ Erreur like message:', err);
+    }
+  });
+
+  // Ajouté: Gestion dislike
+  socket.on('dislike-message', async (data) => {
+    try {
+      if (!socket.userId) return;
+      const { messageId } = data;
+      const message = await Message.findById(messageId);
+      if (!message) return;
+
+      const userId = socket.userId;
+      const index = message.dislikes.indexOf(userId);
+      if (index === -1) {
+        message.dislikes.push(userId);
+        // Retirer like si présent
+        const likeIndex = message.likes.indexOf(userId);
+        if (likeIndex !== -1) message.likes.splice(likeIndex, 1);
+      } else {
+        message.dislikes.splice(index, 1);
+      }
+
+      await message.save();
+      await message.populate('sender', 'firstName lastName profilePhoto email');
+
+      io.to('general').emit('message-disliked', message);
+    } catch (err) {
+      console.error('❌ Erreur dislike message:', err);
     }
   });
 
@@ -825,7 +865,27 @@ app.get('/api/users/chat', authenticateToken, async (req, res) => {
 app.get('/api/chat/messages', authenticateToken, async (req, res) => {
   try {
     const messages = await Message.find({ isGroupMessage: true })
-      .populate('sender', 'firstName lastName profilePhoto')
+      .populate('sender', 'firstName lastName profilePhoto email') // Ajout email
+      .sort({ timestamp: -1 })
+      .limit(50);
+    
+    res.json(messages.reverse());
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+// Ajouté: Endpoint pour récupérer uniquement les médias (photos/vidéos)
+app.get('/api/chat/media-messages', authenticateToken, async (req, res) => {
+  try {
+    const messages = await Message.find({
+      isGroupMessage: true,
+      $or: [
+        { content: { $regex: '^\\[IMAGE\\]' } },
+        { content: { $regex: '^\\[VIDEO\\]' } }
+      ]
+    })
+      .populate('sender', 'firstName lastName profilePhoto email')
       .sort({ timestamp: -1 })
       .limit(50);
     
