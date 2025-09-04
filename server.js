@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -12,7 +13,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 
 // Configuration des variables d'environnement
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 5000;
 const MONGO_USER = process.env.MONGO_USER;
 const MONGO_PASSWORD = encodeURIComponent(process.env.MONGO_PASSWORD);
 const MONGO_CLUSTER = process.env.MONGO_CLUSTER;
@@ -27,27 +28,15 @@ const SUPER_ADMIN_EMAIL = 'nyundumathryme@gmail.com';
 const app = express();
 const server = http.createServer(app);
 
-// Allowed origins pour CORS et Socket.io
-const allowedOrigins = [
-  "http://localhost:3000",                // Pour dev local
-  "https://setraf-frontend.onrender.com"  // Remplace par l'URL réelle de ton frontend Render
-];
-
-// Middleware global CORS
-app.use(cors({
-  origin: allowedOrigins,
-  credentials: true
-}));
-
-// Configuration Socket.io avec CORS
+// Configuration Socket.io
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
-    methods: ["GET", "POST"],
-    credentials: true
+    origin: "http://localhost:3000",
+    methods: ["GET", "POST"]
   }
 });
 
+app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/uploads', express.static('uploads'));
@@ -578,7 +567,7 @@ app.post('/api/user/update-profile-photo', authenticateToken, upload.single('pro
   }
 });
 
-// Mise à jour nom profil
+// Mise à jour profil
 app.post('/api/user/update-profile', authenticateToken, async (req, res) => {
   try {
     const { firstName, lastName } = req.body;
@@ -1053,3 +1042,5 @@ app.use((err, req, res, next) => {
 server.listen(PORT, () => {
   console.log(`🚀 Serveur + Socket.io démarré sur le port ${PORT}`);
 });
+
+
