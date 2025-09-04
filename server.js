@@ -27,15 +27,27 @@ const SUPER_ADMIN_EMAIL = 'nyundumathryme@gmail.com';
 const app = express();
 const server = http.createServer(app);
 
-// Configuration Socket.io
+// Allowed origins pour CORS et Socket.io
+const allowedOrigins = [
+  "http://localhost:3000",                // Pour dev local
+  "https://setraf-frontend.onrender.com"  // Remplace par l'URL réelle de ton frontend Render
+];
+
+// Middleware global CORS
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true
+}));
+
+// Configuration Socket.io avec CORS
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3000",
-    methods: ["GET", "POST"]
+    origin: allowedOrigins,
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
-app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/uploads', express.static('uploads'));
@@ -566,7 +578,7 @@ app.post('/api/user/update-profile-photo', authenticateToken, upload.single('pro
   }
 });
 
-// Mise à jour profil
+// Mise à jour nom profil
 app.post('/api/user/update-profile', authenticateToken, async (req, res) => {
   try {
     const { firstName, lastName } = req.body;
