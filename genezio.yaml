@@ -1,0 +1,13 @@
+backend:
+    functions:
+        - entry: server.js
+          handler: handler
+          name: function-express
+          path: .
+          type: httpServer
+    language:
+        name: js
+    path: ./
+name: SETRAFbackend
+region: us-east-1
+yamlVersion: 2
