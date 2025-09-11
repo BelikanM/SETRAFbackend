@@ -32,7 +32,8 @@ const server = http.createServer(app);
 // Configuration Socket.io
 const io = new Server(server, {
   cors: {
-   origin: ["http://setraf-frontend:3000"],
+   origin: ["https://setraf-frontend.onrender.com"],
+
     methods: ["GET", "POST"]
   }
 });
