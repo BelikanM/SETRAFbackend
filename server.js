@@ -18,7 +18,8 @@ const MONGO_USER = process.env.MONGO_USER;
 const MONGO_PASSWORD = encodeURIComponent(process.env.MONGO_PASSWORD);
 const MONGO_CLUSTER = process.env.MONGO_CLUSTER;
 const MONGO_DB_NAME = process.env.MONGO_DB_NAME;
-const MONGO_URI = `mongodb+srv://${MONGO_USER}:${MONGO_PASSWORD}@${MONGO_CLUSTER}/${MONGO_DB_NAME}?retryWrites=true&w=majority&appName=Cluster0`;
+const MONGO_URI = process.env.MONGO_URI; // utilise directement l'URI complet depuis .env
+
 const JWT_SECRET = process.env.JWT_SECRET;
 const EMAIL_USER = process.env.EMAIL_USER;
 const EMAIL_PASS = process.env.EMAIL_PASS;
@@ -31,7 +32,7 @@ const server = http.createServer(app);
 // Configuration Socket.io
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3000",
+   origin: ["http://setraf-frontend:3000"],
     methods: ["GET", "POST"]
   }
 });
