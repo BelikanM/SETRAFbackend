@@ -32,11 +32,15 @@ const server = http.createServer(app);
 // Configuration Socket.io
 const io = new Server(server, {
   cors: {
-   origin: ["https://setraf-frontend.onrender.com"],
-
-    methods: ["GET", "POST"]
+    origin: [
+      "http://localhost:3000",         // React en local
+      "https://setraf-frontend.onrender.com" // React en production
+    ],
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
+
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
