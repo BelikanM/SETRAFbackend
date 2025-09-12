@@ -509,7 +509,7 @@ app.post('/api/verify-code', async (req, res) => {
 // Feeds: récupérer uniquement les images et vidéos depuis Chat
 app.get("/api/feeds", authenticateToken, async (req, res) => {
   try {
-    const feeds = await Chat.find({
+    const feeds = await Message.find({
       $or: [
         { imageUrl: { $exists: true, $ne: "" } },
         { videoUrl: { $exists: true, $ne: "" } },
@@ -533,6 +533,14 @@ app.post('/api/login', async (req, res) => {
 
     if (!user) {
       return res.status(400).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    if (!user.isVerified) {
+      return res.status(400).json({ message: 'Compte non vérifié', needsVerification: true });
+    }
+
+    if (!user.isApproved) {
+      return res.status(400).json({ message: 'Compte en attente d\'approbation', needsApproval: true });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
@@ -1035,6 +1043,24 @@ app.get('/api/users/with-positions', authenticateToken, restrictTo('admin', 'man
     
     res.json(usersWithPositions);
   } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+let pushSubscriptions = []; // temporaire, tu peux plus tard utiliser MongoDB
+
+app.post('/api/subscribe-push', authenticateToken, async (req, res) => {
+  try {
+    const subscription = req.body; // ton frontend doit envoyer le subscription object
+    if (!subscription) return res.status(400).json({ message: 'Aucune subscription reçue' });
+
+    // Ajouter à la liste si non existante
+    const exists = pushSubscriptions.find(sub => sub.endpoint === subscription.endpoint);
+    if (!exists) pushSubscriptions.push(subscription);
+
+    res.status(201).json({ message: 'Subscription enregistrée !' });
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ message: 'Erreur serveur' });
   }
 });
