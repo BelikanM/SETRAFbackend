@@ -28,13 +28,13 @@ const SUPER_ADMIN_EMAIL = 'nyundumathryme@gmail.com';
 // Initialisation de l'application Express
 const app = express();
 const server = http.createServer(app);
-
-// Configuration Socket.io
 const io = new Server(server, {
   cors: {
     origin: [
-      "http://localhost:3000",         // React en local
-      "https://setraf-frontend.onrender.com" // React en production
+      "http://localhost:3000",
+      "http://127.0.0.1:3000",
+      "http://172.23.144.1:3000",         // ton IP locale
+      "https://setraf-frontend.onrender.com"
     ],
     methods: ["GET", "POST"],
     credentials: true
