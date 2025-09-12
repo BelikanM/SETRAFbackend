@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -32,9 +31,7 @@ const io = new Server(server, {
   cors: {
     origin: [
       "http://localhost:3000",
-      "http://127.0.0.1:3000",
-      "http://172.23.144.1:3000",         // ton IP locale
-      "https://setraf-frontend.onrender.com"
+      "https://setrafuser.onrender.com"
     ],
     methods: ["GET", "POST"],
     credentials: true
@@ -42,7 +39,11 @@ const io = new Server(server, {
 });
 
 
-app.use(cors());
+app.use(cors({
+  origin: "https://setrafuser.onrender.com",
+  methods: ["GET","POST","PUT","DELETE","OPTIONS"],
+  credentials: true
+}));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/uploads', express.static('uploads'));
@@ -1048,5 +1049,3 @@ app.use((err, req, res, next) => {
 server.listen(PORT, () => {
   console.log(`🚀 Serveur + Socket.io démarré sur le port ${PORT}`);
 });
-
-
