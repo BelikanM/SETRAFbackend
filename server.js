@@ -95,12 +95,7 @@ const userSchema = new mongoose.Schema({
     imagePath: { type: String },
   }],
   isOnline: { type: Boolean, default: false },
-  lastSeen: { type: Date, default: Date.now },
-  location: [Number],
-  city: { type: String },
-  country: { type: String },
-  neighborhood: { type: String },
-  hasDevice: { type: Boolean, default: false }
+  lastSeen: { type: Date, default: Date.now }
 });
 
 const employeeSchema = new mongoose.Schema({
@@ -1066,28 +1061,6 @@ app.post('/api/subscribe-push', authenticateToken, async (req, res) => {
     res.status(201).json({ message: 'Subscription enregistrée !' });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Erreur serveur' });
-  }
-});
-
-// Récupérer un utilisateur par ID (pour la carte)
-app.get('/api/users/:id', authenticateToken, async (req, res) => {
-  try {
-    const user = await User.findById(req.params.id).select('firstName lastName neighborhood hasDevice');
-    if (!user) return res.status(404).json({ message: 'Utilisateur non trouvé' });
-    res.json(user);
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur' });
-  }
-});
-
-// Mettre à jour la localisation de l'utilisateur
-app.put('/api/user/location', authenticateToken, async (req, res) => {
-  try {
-    const { location, city, country, neighborhood } = req.body;
-    await User.findByIdAndUpdate(req.user._id, { location, city, country, neighborhood });
-    res.json({ message: 'Localisation mise à jour' });
-  } catch (err) {
     res.status(500).json({ message: 'Erreur serveur' });
   }
 });
