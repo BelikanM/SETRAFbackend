@@ -95,7 +95,15 @@ const userSchema = new mongoose.Schema({
     imagePath: { type: String },
   }],
   isOnline: { type: Boolean, default: false },
-  lastSeen: { type: Date, default: Date.now }
+  lastSeen: { type: Date, default: Date.now },
+  lastLocation: {
+    lat: { type: Number },
+    lng: { type: Number },
+    accuracy: { type: Number }
+  },
+  city: { type: String },
+  country: { type: String },
+  neighborhood: { type: String }
 });
 
 const employeeSchema = new mongoose.Schema({
@@ -859,7 +867,6 @@ app.put('/api/forms/:id', authenticateToken, restrictTo('admin', 'manager'), asy
     const { name, content } = req.body;
     const form = await Form.findById(req.params.id);
     if (!form) return res.status(404).json({ message: 'Formulaire non trouvé' });
-    if (form.createdBy.toString() !== req.user._id.toString()) return res.status(403).json({ message: 'Non autorisé' });
     form.name = name || form.name;
     form.content = content || form.content;
     await form.save();
@@ -874,7 +881,6 @@ app.delete('/api/forms/:id', authenticateToken, restrictTo('admin', 'manager'), 
   try {
     const form = await Form.findById(req.params.id);
     if (!form) return res.status(404).json({ message: 'Formulaire non trouvé' });
-    if (form.createdBy.toString() !== req.user._id.toString()) return res.status(403).json({ message: 'Non autorisé' });
     await Form.deleteOne({ _id: req.params.id });
     res.json({ message: 'Formulaire supprimé' });
   } catch (err) {
@@ -968,7 +974,7 @@ app.get('/api/chat/media-messages', authenticateToken, async (req, res) => {
 });
 
 // Liste utilisateurs (admin)
-app.get('/api/users', authenticateToken, restrictTo('admin'), async (req, res) => {
+app.get('/api/users', authenticateToken, restrictTo('admin', 'manager', 'employee'), async (req, res) => {
   try {
     const users = await User.find().select('-password -verificationCode -verificationCodeExpiry');
     res.json(users);
@@ -1042,6 +1048,23 @@ app.get('/api/users/with-positions', authenticateToken, restrictTo('admin', 'man
     }));
     
     res.json(usersWithPositions);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+app.post('/api/users/update-location', authenticateToken, async (req, res) => {
+  try {
+    const { userId, lat, lng, accuracy, city, country, neighborhood } = req.body;
+    if (req.user._id.toString() !== userId) return res.status(403).json({ message: 'Non autorisé' });
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    user.lastLocation = { lat, lng, accuracy };
+    user.city = city;
+    user.country = country;
+    user.neighborhood = neighborhood;
+    await user.save();
+    res.json({ message: 'Location mise à jour' });
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur' });
   }
