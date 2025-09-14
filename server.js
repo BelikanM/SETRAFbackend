@@ -370,6 +370,31 @@ io.on('connection', (socket) => {
       console.error('❌ Erreur ajout commentaire:', err);
     }
   });
+  // Ajouter l'événement de mise à jour de position
+  socket.on('update-location', async (data) => {
+    try {
+      if (!socket.userId) return;
+      const { lat, lng, accuracy } = data;
+      const user = await User.findById(socket.userId);
+     
+      if (!user) return;
+      user.lastLocation = { lat, lng, accuracy };
+      user.lastSeen = new Date();
+      user.isOnline = true;
+      await user.save();
+      // Informer tous les clients connectés
+      io.emit('user-location-updated', {
+        userId: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        position: user.lastLocation,
+        lastUpdate: user.lastSeen,
+        isOnline: true
+      });
+    } catch (err) {
+      console.error('Erreur mise à jour position socket:', err);
+    }
+  });
 
   socket.on('typing', (data) => {
     if (socket.user) {
@@ -1029,43 +1054,62 @@ app.post('/api/users/:id/update-role', authenticateToken, restrictTo('admin'), a
   }
 });
 
-// Utilisateurs avec positions
-app.get('/api/users/with-positions', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
+// Modifiez la route users/with-positions
+app.get('/api/users/with-positions', authenticateToken, async (req, res) => {
   try {
+    // Récupérer tous les utilisateurs vérifiés et approuvés
     const users = await User.find({
-      role: { $in: ['employee', 'admin'] },
       isVerified: true,
       isApproved: true
-    }).select('-password -verificationCode -verificationCodeExpiry');
-    
-    const usersWithPositions = users.map(user => ({
-      ...user.toObject(),
-      position: {
-        lat: 48.8566 + (Math.random() - 0.5) * 0.1,
-        lng: 2.3522 + (Math.random() - 0.5) * 0.1,
-        lastUpdate: new Date()
-      }
+    }).select('firstName lastName profilePhoto role lastLocation lastSeen isOnline');
+    // Formater les données des utilisateurs
+    const formattedUsers = users.map(user => ({
+      _id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      profilePhoto: user.profilePhoto,
+      role: user.role,
+      isOnline: user.isOnline,
+      lastSeen: user.lastSeen,
+      position: user.lastLocation ? {
+        lat: user.lastLocation.lat,
+        lng: user.lastLocation.lng,
+        accuracy: user.lastLocation.accuracy,
+        lastUpdate: user.lastSeen
+      } : null
     }));
-    
-    res.json(usersWithPositions);
+    res.json(formattedUsers);
   } catch (err) {
+    console.error('Erreur:', err);
     res.status(500).json({ message: 'Erreur serveur' });
   }
 });
-
+// Mise à jour de la route update-location
 app.post('/api/users/update-location', authenticateToken, async (req, res) => {
   try {
-    const { userId, lat, lng, accuracy, city, country, neighborhood } = req.body;
-    if (req.user._id.toString() !== userId) return res.status(403).json({ message: 'Non autorisé' });
+    const { userId, lat, lng, accuracy } = req.body;
+   
+    // Vérifier que l'utilisateur met à jour sa propre position
+    if (req.user._id.toString() !== userId) {
+      return res.status(403).json({ message: 'Non autorisé' });
+    }
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    if (!user) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+    // Mettre à jour la position
     user.lastLocation = { lat, lng, accuracy };
-    user.city = city;
-    user.country = country;
-    user.neighborhood = neighborhood;
+    user.lastSeen = new Date();
+    user.isOnline = true;
+   
     await user.save();
-    res.json({ message: 'Location mise à jour' });
+    res.json({
+      message: 'Position mise à jour',
+      position: user.lastLocation,
+      lastUpdate: user.lastSeen
+    });
   } catch (err) {
+    console.error('Erreur:', err);
     res.status(500).json({ message: 'Erreur serveur' });
   }
 });
