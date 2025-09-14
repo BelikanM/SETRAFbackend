@@ -103,7 +103,8 @@ const userSchema = new mongoose.Schema({
   },
   city: { type: String },
   country: { type: String },
-  neighborhood: { type: String }
+  neighborhood: { type: String },
+  hasDevice: { type: Boolean, default: false }
 });
 
 const employeeSchema = new mongoose.Schema({
@@ -183,6 +184,8 @@ async function createSuperAdmin() {
   }
 }
 
+let userLocations = {}; // { userId: { lat, lng, displayName, hasDevice, neighborhood } }
+
 // Socket.io pour le chat en temps réel
 io.on('connection', (socket) => {
   console.log('🎮 Utilisateur connecté:', socket.id);
@@ -208,11 +211,28 @@ io.on('connection', (socket) => {
           lastName: user.lastName
         });
         
+        socket.emit("locationsUpdate", userLocations);
+        
         console.log(`👤 Utilisateur authentifié: ${user.firstName} ${user.lastName}`);
       }
     } catch (err) {
       console.error('❌ Erreur authentification socket:', err);
     }
+  });
+
+  // Réception de la position d’un utilisateur
+  socket.on("updateLocation", async (data) => {
+    if (!socket.userId) return;
+    // data = { userId, lat, lng, displayName, hasDevice, neighborhood, city, country, accuracy }
+    userLocations[data.userId] = { ...data, socketId: socket.id };
+    await User.findByIdAndUpdate(socket.userId, {
+      lastLocation: { lat: data.lat, lng: data.lng, accuracy: data.accuracy },
+      city: data.city,
+      country: data.country,
+      neighborhood: data.neighborhood,
+      hasDevice: data.hasDevice
+    });
+    io.emit("locationsUpdate", userLocations); // envoie à tout le monde
   });
 
   socket.on('send-group-message', async (data) => {
@@ -388,6 +408,13 @@ io.on('connection', (socket) => {
         isOnline: false, 
         lastSeen: new Date() 
       });
+      
+      Object.keys(userLocations).forEach((id) => {
+        if (userLocations[id].socketId === socket.id) {
+          delete userLocations[id];
+        }
+      });
+      io.emit("locationsUpdate", userLocations);
       
       socket.broadcast.emit('user-offline', {
         userId: socket.userId
