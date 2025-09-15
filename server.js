@@ -103,7 +103,21 @@ const userSchema = new mongoose.Schema({
   },
   city: { type: String },
   country: { type: String },
-  neighborhood: { type: String }
+  neighborhood: { type: String },
+  devices: [{
+    id: { type: String, required: true },
+    type: { type: String },
+    name: { type: String },
+    os: { type: String },
+    ip: { type: String },
+    lastSeen: { type: Date },
+    location: {
+      lat: { type: Number },
+      lng: { type: Number },
+      accuracy: { type: Number },
+      lastUpdate: { type: Date }
+    }
+  }]
 });
 
 const employeeSchema = new mongoose.Schema({
@@ -374,21 +388,51 @@ io.on('connection', (socket) => {
   socket.on('update-location', async (data) => {
     try {
       if (!socket.userId) return;
-      const { lat, lng, accuracy } = data;
+      const { deviceId, deviceType, deviceName, deviceOs, lat, lng, accuracy } = data;
       const user = await User.findById(socket.userId);
-     
       if (!user) return;
-      user.lastLocation = { lat, lng, accuracy };
+
+      let device = user.devices.find(d => d.id === deviceId);
+      const ip = socket.handshake.address;
+
+      if (!device) {
+        device = {
+          id: deviceId,
+          type: deviceType,
+          name: deviceName,
+          os: deviceOs,
+          ip,
+          lastSeen: new Date(),
+          location: { lat, lng, accuracy, lastUpdate: new Date() }
+        };
+        user.devices.push(device);
+      } else {
+        device.type = deviceType || device.type;
+        device.name = deviceName || device.name;
+        device.os = deviceOs || device.os;
+        device.ip = ip || device.ip;
+        device.lastSeen = new Date();
+        device.location = { lat, lng, accuracy, lastUpdate: new Date() };
+      }
+
       user.lastSeen = new Date();
       user.isOnline = true;
       await user.save();
+
       // Informer tous les clients connectés
-      io.emit('user-location-updated', {
+      io.emit('user-device-location-updated', {
         userId: user._id,
         firstName: user.firstName,
         lastName: user.lastName,
-        position: user.lastLocation,
-        lastUpdate: user.lastSeen,
+        device: {
+          id: device.id,
+          type: device.type,
+          name: device.name,
+          os: device.os,
+          ip: device.ip,
+          lastSeen: device.lastSeen,
+          location: device.location
+        },
         isOnline: true
       });
     } catch (err) {
@@ -1061,7 +1105,7 @@ app.get('/api/users/with-positions', authenticateToken, async (req, res) => {
     const users = await User.find({
       isVerified: true,
       isApproved: true
-    }).select('firstName lastName profilePhoto role lastLocation lastSeen isOnline');
+    }).select('firstName lastName profilePhoto role devices isOnline lastSeen');
     // Formater les données des utilisateurs
     const formattedUsers = users.map(user => ({
       _id: user._id,
@@ -1071,12 +1115,7 @@ app.get('/api/users/with-positions', authenticateToken, async (req, res) => {
       role: user.role,
       isOnline: user.isOnline,
       lastSeen: user.lastSeen,
-      position: user.lastLocation ? {
-        lat: user.lastLocation.lat,
-        lng: user.lastLocation.lng,
-        accuracy: user.lastLocation.accuracy,
-        lastUpdate: user.lastSeen
-      } : null
+      devices: user.devices || []
     }));
     res.json(formattedUsers);
   } catch (err) {
@@ -1087,7 +1126,7 @@ app.get('/api/users/with-positions', authenticateToken, async (req, res) => {
 // Mise à jour de la route update-location
 app.post('/api/users/update-location', authenticateToken, async (req, res) => {
   try {
-    const { userId, lat, lng, accuracy } = req.body;
+    const { userId, lat, lng, accuracy, deviceId, deviceType, deviceName, deviceOs } = req.body;
    
     // Vérifier que l'utilisateur met à jour sa propre position
     if (req.user._id.toString() !== userId) {
@@ -1097,7 +1136,30 @@ app.post('/api/users/update-location', authenticateToken, async (req, res) => {
     if (!user) {
       return res.status(404).json({ message: 'Utilisateur non trouvé' });
     }
-    // Mettre à jour la position
+
+    let device = user.devices.find(d => d.id === deviceId);
+    const ip = req.ip;
+
+    if (!device) {
+      device = {
+        id: deviceId,
+        type: deviceType,
+        name: deviceName,
+        os: deviceOs,
+        ip,
+        lastSeen: new Date(),
+        location: { lat, lng, accuracy, lastUpdate: new Date() }
+      };
+      user.devices.push(device);
+    } else {
+      device.type = deviceType || device.type;
+      device.name = deviceName || device.name;
+      device.os = deviceOs || device.os;
+      device.ip = ip || device.ip;
+      device.lastSeen = new Date();
+      device.location = { lat, lng, accuracy, lastUpdate: new Date() };
+    }
+   
     user.lastLocation = { lat, lng, accuracy };
     user.lastSeen = new Date();
     user.isOnline = true;
@@ -1105,7 +1167,7 @@ app.post('/api/users/update-location', authenticateToken, async (req, res) => {
     await user.save();
     res.json({
       message: 'Position mise à jour',
-      position: user.lastLocation,
+      devices: user.devices,
       lastUpdate: user.lastSeen
     });
   } catch (err) {
