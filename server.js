@@ -11,6 +11,26 @@ const fs = require('fs');
 const http = require('http');
 const { Server } = require('socket.io');
 const axios = require('axios');
+const fetch = require("node-fetch");
+
+// Fonction pour géocoder
+async function getAddressFromCoords(lat, lon) {
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=18&addressdetails=1`
+    );
+    const data = await res.json();
+
+    return {
+      quartier: data.address.suburb || data.address.neighbourhood || "Inconnu",
+      ville: data.address.city || data.address.town || data.address.village || "Inconnue",
+      pays: data.address.country || "Inconnu"
+    };
+  } catch (err) {
+    console.error("Erreur géocodage:", err);
+    return { quartier: "N/A", ville: "N/A", pays: "N/A" };
+  }
+}
 
 // Configuration des variables d'environnement
 const PORT = process.env.PORT || 5000;
@@ -421,15 +441,10 @@ io.on('connection', (socket) => {
       user.isOnline = true;
 
       // Reverse geocoding
-      try {
-        const response = await axios.get(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`);
-        const { city, country, suburb, neighbourhood, quarter } = response.data.address || {};
-        user.city = city || user.city;
-        user.country = country || user.country;
-        user.neighborhood = suburb || neighbourhood || quarter || user.neighborhood;
-      } catch (error) {
-        console.error('Erreur reverse geocode:', error);
-      }
+      const { quartier: neighborhood, ville: city, pays: country } = await getAddressFromCoords(lat, lng);
+      user.city = city;
+      user.country = country;
+      user.neighborhood = neighborhood;
 
       await user.save();
 
@@ -1187,15 +1202,10 @@ app.post('/api/users/update-location', authenticateToken, async (req, res) => {
     user.isOnline = true;
 
     // Reverse geocoding
-    try {
-      const response = await axios.get(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`);
-      const { city, country, suburb, neighbourhood, quarter } = response.data.address || {};
-      user.city = city || user.city;
-      user.country = country || user.country;
-      user.neighborhood = suburb || neighbourhood || quarter || user.neighborhood;
-    } catch (error) {
-      console.error('Erreur reverse geocode:', error);
-    }
+    const { quartier: neighborhood, ville: city, pays: country } = await getAddressFromCoords(lat, lng);
+    user.city = city;
+    user.country = country;
+    user.neighborhood = neighborhood;
    
     await user.save();
     res.json({
