@@ -10,6 +10,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { Server } = require('socket.io');
+const axios = require('axios');
 
 // Configuration des variables d'environnement
 const PORT = process.env.PORT || 5000;
@@ -415,8 +416,21 @@ io.on('connection', (socket) => {
         device.location = { lat, lng, accuracy, lastUpdate: new Date() };
       }
 
+      user.lastLocation = { lat, lng, accuracy };
       user.lastSeen = new Date();
       user.isOnline = true;
+
+      // Reverse geocoding
+      try {
+        const response = await axios.get(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`);
+        const { city, country, suburb, neighbourhood, quarter } = response.data.address || {};
+        user.city = city || user.city;
+        user.country = country || user.country;
+        user.neighborhood = suburb || neighbourhood || quarter || user.neighborhood;
+      } catch (error) {
+        console.error('Erreur reverse geocode:', error);
+      }
+
       await user.save();
 
       // Informer tous les clients connectés
@@ -433,7 +447,11 @@ io.on('connection', (socket) => {
           lastSeen: device.lastSeen,
           location: device.location
         },
-        isOnline: true
+        isOnline: true,
+        city: user.city,
+        country: user.country,
+        neighborhood: user.neighborhood,
+        lastLocation: user.lastLocation
       });
     } catch (err) {
       console.error('Erreur mise à jour position socket:', err);
@@ -1105,7 +1123,7 @@ app.get('/api/users/with-positions', authenticateToken, async (req, res) => {
     const users = await User.find({
       isVerified: true,
       isApproved: true
-    }).select('firstName lastName profilePhoto role devices isOnline lastSeen');
+    }).select('firstName lastName profilePhoto role devices isOnline lastSeen lastLocation city country neighborhood');
     // Formater les données des utilisateurs
     const formattedUsers = users.map(user => ({
       _id: user._id,
@@ -1115,7 +1133,11 @@ app.get('/api/users/with-positions', authenticateToken, async (req, res) => {
       role: user.role,
       isOnline: user.isOnline,
       lastSeen: user.lastSeen,
-      devices: user.devices || []
+      devices: user.devices || [],
+      lastLocation: user.lastLocation,
+      city: user.city,
+      country: user.country,
+      neighborhood: user.neighborhood
     }));
     res.json(formattedUsers);
   } catch (err) {
@@ -1163,12 +1185,27 @@ app.post('/api/users/update-location', authenticateToken, async (req, res) => {
     user.lastLocation = { lat, lng, accuracy };
     user.lastSeen = new Date();
     user.isOnline = true;
+
+    // Reverse geocoding
+    try {
+      const response = await axios.get(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`);
+      const { city, country, suburb, neighbourhood, quarter } = response.data.address || {};
+      user.city = city || user.city;
+      user.country = country || user.country;
+      user.neighborhood = suburb || neighbourhood || quarter || user.neighborhood;
+    } catch (error) {
+      console.error('Erreur reverse geocode:', error);
+    }
    
     await user.save();
     res.json({
       message: 'Position mise à jour',
       devices: user.devices,
-      lastUpdate: user.lastSeen
+      lastUpdate: user.lastSeen,
+      city: user.city,
+      country: user.country,
+      neighborhood: user.neighborhood,
+      lastLocation: user.lastLocation
     });
   } catch (err) {
     console.error('Erreur:', err);
