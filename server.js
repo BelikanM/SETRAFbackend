@@ -14,6 +14,10 @@ const axios = require('axios');
 
 // Configuration des variables d'environnement
 const PORT = process.env.PORT || 5000;
+const MONGO_USER = process.env.MONGO_USER;
+const MONGO_PASSWORD = encodeURIComponent(process.env.MONGO_PASSWORD);
+const MONGO_CLUSTER = process.env.MONGO_CLUSTER;
+const MONGO_DB_NAME = process.env.MONGO_DB_NAME;
 const MONGO_URI = process.env.MONGO_URI; // utilise directement l'URI complet depuis .env
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -28,26 +32,22 @@ const io = new Server(server, {
   cors: {
     origin: [
       "http://localhost:3000",
-      "https://setrafuser.onrender.com",
-      "*"
+      "https://setrafuser.onrender.com"
     ],
     methods: ["GET", "POST"],
     credentials: true
   }
 });
 
+
 app.use(cors({
-  origin: [
-    "https://setrafuser.onrender.com",
-    "http://localhost:3000",
-    "*"
-  ],
+  origin: "https://setrafuser.onrender.com",
   methods: ["GET","POST","PUT","DELETE","OPTIONS"],
   credentials: true
 }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+app.use('/uploads', express.static('uploads'));
 
 // Configuration de Multer pour les uploads
 const storage = multer.diskStorage({
@@ -156,23 +156,10 @@ const messageSchema = new mongoose.Schema({
   }]
 });
 
-const markerSchema = new mongoose.Schema({
-  latitude: { type: Number, required: true },
-  longitude: { type: Number, required: true },
-  title: { type: String, required: true },
-  comment: { type: String },
-  color: { type: String },
-  photos: [{ type: String }],
-  videos: [{ type: String }],
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  createdAt: { type: Date, default: Date.now }
-});
-
 const User = mongoose.model('User', userSchema);
 const Employee = mongoose.model('Employee', employeeSchema);
 const Form = mongoose.model('Form', formSchema);
 const Message = mongoose.model('Message', messageSchema);
-const Marker = mongoose.model('Marker', markerSchema);
 
 // Connexion à MongoDB
 mongoose.connect(MONGO_URI)
@@ -211,12 +198,9 @@ async function createSuperAdmin() {
   }
 }
 
-// Socket.io pour le chat en temps réel et fonctionnalités temps réel (fusionné avec backend B)
+// Socket.io pour le chat en temps réel
 io.on('connection', (socket) => {
   console.log('🎮 Utilisateur connecté:', socket.id);
-
-  // Envoyer tous les marqueurs au nouveau client (de backend B)
-  Marker.find().then(markers => socket.emit('allMarkers', markers));
 
   socket.on('authenticate', async (token) => {
     try {
@@ -401,12 +385,11 @@ io.on('connection', (socket) => {
       console.error('❌ Erreur ajout commentaire:', err);
     }
   });
-
-  // Fusion: Mise à jour de position (renommé pour matcher backend B: updatePosition → positionsUpdate)
-  socket.on('updatePosition', async (data) => {
+  // Ajouter l'événement de mise à jour de position
+  socket.on('update-location', async (data) => {
     try {
       if (!socket.userId) return;
-      const { deviceId, deviceType, deviceName, deviceOs, latitude, longitude, accuracy } = data;
+      const { deviceId, deviceType, deviceName, deviceOs, lat, lng, accuracy } = data;
       const user = await User.findById(socket.userId);
       if (!user) return;
 
@@ -421,7 +404,7 @@ io.on('connection', (socket) => {
           os: deviceOs,
           ip,
           lastSeen: new Date(),
-          location: { lat: latitude, lng: longitude, accuracy, lastUpdate: new Date() }
+          location: { lat, lng, accuracy, lastUpdate: new Date() }
         };
         user.devices.push(device);
       } else {
@@ -430,16 +413,16 @@ io.on('connection', (socket) => {
         device.os = deviceOs || device.os;
         device.ip = ip || device.ip;
         device.lastSeen = new Date();
-        device.location = { lat: latitude, lng: longitude, accuracy, lastUpdate: new Date() };
+        device.location = { lat, lng, accuracy, lastUpdate: new Date() };
       }
 
-      user.lastLocation = { lat: latitude, lng: longitude, accuracy };
+      user.lastLocation = { lat, lng, accuracy };
       user.lastSeen = new Date();
       user.isOnline = true;
 
       // Reverse geocoding
       try {
-        const response = await axios.get(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}`);
+        const response = await axios.get(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}`);
         const { city, country, suburb, neighbourhood, quarter } = response.data.address || {};
         user.city = city || user.city;
         user.country = country || user.country;
@@ -450,8 +433,8 @@ io.on('connection', (socket) => {
 
       await user.save();
 
-      // Informer tous les clients connectés (renommé pour matcher backend B)
-      io.emit('positionsUpdate', {
+      // Informer tous les clients connectés
+      io.emit('user-device-location-updated', {
         userId: user._id,
         firstName: user.firstName,
         lastName: user.lastName,
@@ -1162,8 +1145,7 @@ app.get('/api/users/with-positions', authenticateToken, async (req, res) => {
     res.status(500).json({ message: 'Erreur serveur' });
   }
 });
-
-// Mise à jour de la route update-location (gardée pour compatibilité, mais socket utilise updatePosition)
+// Mise à jour de la route update-location
 app.post('/api/users/update-location', authenticateToken, async (req, res) => {
   try {
     const { userId, lat, lng, accuracy, deviceId, deviceType, deviceName, deviceOs } = req.body;
@@ -1228,69 +1210,6 @@ app.post('/api/users/update-location', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Erreur:', err);
     res.status(500).json({ message: 'Erreur serveur' });
-  }
-});
-
-// Fusion: Routes pour les marqueurs (CRUD avec uploads, de backend B)
-app.get('/api/markers', authenticateToken, async (req, res) => {
-  try {
-    const markers = await Marker.find().populate('createdBy', 'firstName lastName');
-    res.json(markers);
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur' });
-  }
-});
-
-app.post('/api/markers', authenticateToken, upload.fields([{ name: 'photos' }, { name: 'videos' }]), async (req, res) => {
-  try {
-    const { latitude, longitude, title, comment, color } = req.body;
-    const photos = req.files.photos ? req.files.photos.map(f => `/uploads/${f.filename}`) : [];
-    const videos = req.files.videos ? req.files.videos.map(f => `/uploads/${f.filename}`) : [];
-
-    const marker = new Marker({ latitude, longitude, title, comment, color, photos, videos, createdBy: req.user._id });
-    await marker.save();
-    io.emit('newMarker', marker); // Émettre en temps réel
-    res.json(marker);
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la création du marqueur' });
-  }
-});
-
-app.put('/api/markers/:id', authenticateToken, upload.fields([{ name: 'photos' }, { name: 'videos' }]), async (req, res) => {
-  try {
-    const { latitude, longitude, title, comment, color } = req.body;
-    const marker = await Marker.findById(req.params.id);
-    if (!marker) return res.status(404).json({ message: 'Marqueur non trouvé' });
-    if (marker.createdBy.toString() !== req.user._id.toString()) return res.status(403).json({ message: 'Non autorisé' });
-
-    marker.latitude = latitude || marker.latitude;
-    marker.longitude = longitude || marker.longitude;
-    marker.title = title || marker.title;
-    marker.comment = comment || marker.comment;
-    marker.color = color || marker.color;
-
-    if (req.files.photos) marker.photos = req.files.photos.map(f => `/uploads/${f.filename}`);
-    if (req.files.videos) marker.videos = req.files.videos.map(f => `/uploads/${f.filename}`);
-
-    await marker.save();
-    io.emit('markerUpdated', marker); // Émettre mise à jour en temps réel
-    res.json(marker);
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la mise à jour du marqueur' });
-  }
-});
-
-app.delete('/api/markers/:id', authenticateToken, async (req, res) => {
-  try {
-    const marker = await Marker.findById(req.params.id);
-    if (!marker) return res.status(404).json({ message: 'Marqueur non trouvé' });
-    if (marker.createdBy.toString() !== req.user._id.toString()) return res.status(403).json({ message: 'Non autorisé' });
-
-    await Marker.deleteOne({ _id: req.params.id });
-    io.emit('markerDeleted', req.params.id); // Émettre suppression en temps réel
-    res.json({ message: 'Marqueur supprimé' });
-  } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la suppression du marqueur' });
   }
 });
 
