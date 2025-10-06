@@ -40,9 +40,21 @@ const io = new Server(server, {
 });
 
 
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://setrafuser.onrender.com"
+];
+
 app.use(cors({
-  origin: "https://setrafuser.onrender.com",
-  methods: ["GET","POST","PUT","DELETE","OPTIONS"],
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.log("CORS blocked request from:", origin);
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   credentials: true
 }));
 app.use(express.json({ limit: '50mb' }));
