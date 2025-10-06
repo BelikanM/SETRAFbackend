@@ -134,17 +134,19 @@ const userSchema = new mongoose.Schema({
 });
 
 const employeeSchema = new mongoose.Schema({
-  firstName: { type: String, required: true },
-  lastName: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
-  department: { type: String, required: true },
-  position: { type: String, required: true },
-  hireDate: { type: Date, required: true },
-  profilePhoto: { type: String },
-  pdfPath: { type: String },
-  customFields: { type: Map, of: mongoose.Schema.Types.Mixed },
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-});
+  firstName: String,
+  lastName: String,
+  email: { type: String, unique: true },
+  role: { type: String, default: 'employe' },
+  password: String,
+  profilePhoto: String,
+  pdfPath: String,
+  location: {
+    latitude: Number,
+    longitude: Number,
+    updatedAt: Date,
+  },
+}, { timestamps: true });
 
 const formSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -804,61 +806,70 @@ app.get('/api/stats', authenticateToken, restrictTo('admin', 'manager'), async (
   }
 });
 
-// Liste employés
-app.get('/api/employees', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
+// --- GESTION DES EMPLOYÉS --- //
+
+// 🔹 1. Lister tous les employés (public)
+app.get('/api/employees', async (req, res) => {
   try {
-    const employees = await Employee.find();
+    const employees = await Employee.find({}, '-password'); // exclut le mot de passe
     res.json(employees);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur' });
+    console.error('Erreur liste employés:', err);
+    res.status(500).json({ message: 'Erreur lors du chargement des employés' });
   }
 });
 
-// Ajouter employé
-app.post('/api/employees', authenticateToken, restrictTo('admin', 'manager'), upload.fields([{ name: 'profilePhoto', maxCount: 1 }, { name: 'pdf', maxCount: 1 }]), async (req, res) => {
+// 🔹 2. Créer un employé (protégé par JWT si tu veux)
+app.post('/api/employees', async (req, res) => {
   try {
-    const { firstName, lastName, email, department, position, hireDate } = req.body;
-    const profilePhoto = req.files['profilePhoto'] ? req.files['profilePhoto'][0].path : null;
-    const pdfPath = req.files['pdf'] ? req.files['pdf'][0].path : null;
-    const employee = new Employee({ firstName, lastName, email, department, position, hireDate, profilePhoto, pdfPath, createdBy: req.user._id });
+    const { firstName, lastName, email, role } = req.body;
+    const employee = new Employee({ firstName, lastName, email, role });
     await employee.save();
+    res.status(201).json(employee);
+  } catch (err) {
+    console.error('Erreur création employé:', err);
+    res.status(500).json({ message: 'Erreur lors de la création de l\'employé' });
+  }
+});
+
+// 🔹 3. Mettre à jour la position GPS d’un employé
+app.post('/api/employees/location/update', async (req, res) => {
+  const { userId, latitude, longitude } = req.body;
+  if (!userId) return res.status(400).json({ message: 'userId manquant' });
+
+  try {
+    const employee = await Employee.findByIdAndUpdate(
+      userId,
+      { location: { latitude, longitude, updatedAt: new Date() } },
+      { new: true }
+    );
+
+    if (!employee) return res.status(404).json({ message: 'Employé non trouvé' });
     res.json(employee);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de l\'ajout de l\'employé' });
+    console.error('Erreur MAJ localisation:', err);
+    res.status(500).json({ message: 'Erreur lors de la mise à jour de la localisation' });
   }
 });
 
-// Mettre à jour employé
-app.put('/api/employees/:id', authenticateToken, restrictTo('admin', 'manager'), upload.fields([{ name: 'profilePhoto', maxCount: 1 }, { name: 'pdf', maxCount: 1 }]), async (req, res) => {
+// 🔹 4. Supprimer un employé
+app.delete('/api/employees/:id', async (req, res) => {
   try {
-    const { firstName, lastName, email, department, position, hireDate } = req.body;
     const employee = await Employee.findById(req.params.id);
     if (!employee) return res.status(404).json({ message: 'Employé non trouvé' });
 
-    employee.firstName = firstName || employee.firstName;
-    employee.lastName = lastName || employee.lastName;
-    employee.email = email || employee.email;
-    employee.department = department || employee.department;
-    employee.position = position || employee.position;
-    employee.hireDate = hireDate || employee.hireDate;
+    // Supprimer fichiers liés s’ils existent
+    if (employee.profilePhoto && fs.existsSync(employee.profilePhoto)) {
+      fs.unlinkSync(employee.profilePhoto);
+    }
+    if (employee.pdfPath && fs.existsSync(employee.pdfPath)) {
+      fs.unlinkSync(employee.pdfPath);
+    }
 
-    if (req.files['profilePhoto']) employee.profilePhoto = req.files['profilePhoto'][0].path;
-    if (req.files['pdf']) employee.pdfPath = req.files['pdf'][0].path;
-
-    await employee.save();
-    res.json(employee);
+    await Employee.findByIdAndDelete(req.params.id);
+    res.json({ message: 'Employé supprimé avec succès' });
   } catch (err) {
-    res.status(500).json({ message: 'Erreur lors de la mise à jour de l\'employé' });
-  }
-});
-
-// Supprimer employé
-app.delete('/api/employees/:id', authenticateToken, restrictTo('admin', 'manager'), async (req, res) => {
-  try {
-    const employee = await Employee.findByIdAndDelete(req.params.id);
-    if (!employee) return res.status(404).json({ message: 'Employé non trouvé' });
-    res.json({ message: 'Employé supprimé' });
-  } catch (err) {
+    console.error('Erreur suppression employé:', err);
     res.status(500).json({ message: 'Erreur lors de la suppression de l\'employé' });
   }
 });
